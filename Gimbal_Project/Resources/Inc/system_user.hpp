@@ -2,6 +2,9 @@
 *******************************************************************************
 * @file      ：system_user.hpp (Gimbal)
 * @brief     : 云台C板 - 全局定义和配置
+* @history   :
+* Version     Date            Author          Note
+* V1.4.6      2025-11-15      Gemini          1. [BUG修复] 修正所有 volatile 声明
 *******************************************************************************
 */
 /* Define to prevent recursive inclusion -------------------------------------*/
@@ -32,13 +35,12 @@ extern "C" {
 
 // ------------------- 云台电机 ID (舵轮拓扑图 P6) --------------------
 #define GIMBAL_PITCH_MOTOR_ID 2 // DM-J4310 (ID 2, CAN2)
-// (Yaw 电机在底盘板上)
 
 // ------------------- 板间通信 CAN ID (CAN1) --------------------
-// 云台 -> 底盘: 发送遥控器指令
-#define CAN_ID_TX_GIMBAL_TO_CHASSIS 0x300
+#define CAN_ID_TX_GIMBAL_TO_CHASSIS 0x300 // (发送 [vx][vy])
+// (0x301 用于发送 [wz][mode])
 
-// 遥控器通道最大缩放值
+// ------------------- 遥控器宏 --------------------
 #define RC_MAX_SPEED_X 1.0f // m/s
 #define RC_MAX_SPEED_Y 1.0f // m/s
 #define RC_MAX_SPEED_WZ (M_PI / 2.0f) // rad/s
@@ -49,7 +51,7 @@ extern const float kCtrlPeriod; // = 0.001f (1ms)
 
 /* Exported types ------------------------------------------------------------*/
 
-// 机器人控制模式 (云台只负责转发)
+// 机器人控制模式 (云台负责定义和转发)
 typedef enum {
     MODE_SAFETY_CALIB, // 安全模式 (启动时校准IMU)
     MODE_ESTOP,        // 紧急停止模式 (左拨杆-下)
@@ -67,7 +69,9 @@ typedef struct _imu_datas_t
 } ImuDatas_t;
 
 /* Exported variables --------------------------------------------------------*/
-extern uint32_t tick;
+// [BUG 修复] 修正 volatile 声明
+extern volatile uint32_t tick;
+extern volatile RobotControlMode g_control_mode; // 声明为 volatile
 extern ImuDatas_t imu_datas;
 
 

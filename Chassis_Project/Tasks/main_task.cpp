@@ -4,7 +4,7 @@
 * @brief     : 底盘C板 - 主循环任务
 * @history   :
 * Version     Date            Author          Note
-* V1.4.3      2025-11-15      Gemini          1. [BUG修复] 修复 volatile 警告
+* V1.4.5      2025-11-15      Gemini          1. [BUG修复] 修复 volatile 警告/定义
 *******************************************************************************
 */
 
@@ -36,7 +36,7 @@
 
 /* Private types -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
-// [BUG 修复] 修正 volatile 声明
+// [BUG 修复] 确保定义与 .hpp 中的 extern 声明完全匹配
 volatile uint32_t tick = 0;
 const float kCtrlPeriod = 0.001f; // 1ms
 volatile RobotControlMode g_control_mode = MODE_SAFETY_CALIB; 
@@ -44,7 +44,6 @@ volatile float g_rc_cmd_vx = 0.0f;
 volatile float g_rc_cmd_vy = 0.0f;
 volatile float g_rc_cmd_wz = 0.0f;
 volatile float g_gimbal_yaw_rad = 0.0f; 
-ImuDatas_t imu_datas = {0}; 
 // [BUG 修复结束]
 
 // -- 底盘C板设备句柄 --
