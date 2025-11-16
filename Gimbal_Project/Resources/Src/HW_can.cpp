@@ -1,11 +1,12 @@
 /**
  *******************************************************************************
  * @file      :HW_can.cpp (Gimbal)
- * @brief     : 云台C板 - CAN 驱动和回调
+ * @brief     : 云台C板 - CAN 驱动和回调 (V1.5.0)
  *******************************************************************************
  */
 /* Includes ------------------------------------------------------------------*/
 #include "HW_can.hpp"
+#include "system_user.hpp" // [V1.5.0] 包含新宏定义
 #include "stdint.h"
 #include <string.h> // for memcpy
 
@@ -15,7 +16,7 @@
 /* Private variables ---------------------------------------------------------*/
 static CAN_RxHeaderTypeDef rx_header1, rx_header2;
 static uint8_t can1_rx_data[8], can2_rx_data[8];
-uint32_t pTxMailbox; // CUBE 生成的
+uint32_t pTxMailbox; 
 
 /* External variables --------------------------------------------------------*/
 // 声明在 main_task.cpp 中定义的电机句柄
@@ -51,7 +52,6 @@ void CanFilter_Init(CAN_HandleTypeDef *hcan) {
 
 /**
  * @brief   CAN1 FIFO0 中断回调 (板间通信)
- * @note    云台板主要*发送*，但也可能接收到底盘状态
  */
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
   if (hcan == &hcan1) {
@@ -81,17 +81,15 @@ void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan) {
  * @brief   云台电机数据解码 (CAN2)
  */
 static void CAN_Rx_Decode_Gimbal(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_data) {
-  // DM4310 反馈帧 ID = Master ID (我们设置为 0) + 电机 ID
-  // 假设 Master ID = 0x00
-  // Pitch (ID 2) 的反馈 ID 是 0x00 + 0x02 = 0x02
-  if (rx_header->StdId == g_pitch_motor.para.id) 
+  // DM4310 反馈帧 ID = 0x00 + 电机 ID
+  if (rx_header->StdId == g_pitch_motor.para.id) // ID 2
   {
       dm4310_fbdata(&g_pitch_motor, rx_data, rx_header->DLC);
   }
 }
 
 /**
- * @brief   向can总线发送数据 (同底盘)
+ * @brief   向can总线发送数据
  */
 void CAN_Send_Msg(CAN_HandleTypeDef *hcan, uint8_t *msg, uint32_t id,
                   uint8_t len) {

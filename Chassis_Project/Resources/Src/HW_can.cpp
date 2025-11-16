@@ -1,15 +1,12 @@
 /**
  *******************************************************************************
  * @file      :HW_can.cpp (Chassis)
- * @brief     : 底盘C板 - CAN 驱动和回调
- * @history   :
- * Version     Date            Author          Note
- * V1.4.3      2025-11-15      Gemini          1. [BUG修复] 补全 system_user.hpp
+ * @brief     : 底盘C板 - CAN 驱动和回调 (V1.5.0)
  *******************************************************************************
  */
 /* Includes ------------------------------------------------------------------*/
 #include "HW_can.hpp"
-#include "system_user.hpp" // [BUG 修复] 补全此头文件
+#include "system_user.hpp" 
 #include "stdint.h"
 #include <string.h> // for memcpy
 
@@ -21,22 +18,20 @@
 /* Private variables ---------------------------------------------------------*/
 static CAN_RxHeaderTypeDef rx_header1, rx_header2;
 static uint8_t can1_rx_data[8], can2_rx_data[8];
-uint32_t pTxMailbox; // CUBE 生成的
+uint32_t pTxMailbox; 
 
 /* External variables --------------------------------------------------------*/
 // 电机句柄 (from main_task.cpp)
 extern M3508Handle g_wheel_motors[4]; 
 extern GM6020Handle g_steer_motors[4]; 
-extern Joint_Motor_t g_yaw_motor; // Yaw 电机
+extern Joint_Motor_t g_yaw_motor; 
 
-// RC 指令 (from main_task.cpp)
+// [V1.5.0] 全局变量
 extern volatile float g_rc_cmd_vx;
 extern volatile float g_rc_cmd_vy;
-extern volatile float g_rc_cmd_wz;
 extern volatile RobotControlMode g_control_mode;
-
-// 云台角度 (from main_task.cpp)
-extern volatile float g_gimbal_yaw_rad; 
+extern volatile float g_target_gimbal_yaw_rad; 
+extern volatile float g_current_gimbal_yaw_rad;
 
 /* Private function prototypes -----------------------------------------------*/
 static void CAN_Rx_Decode_Chassis(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_data);
@@ -69,15 +64,16 @@ void CanFilter_Init(CAN_HandleTypeDef *hcan) {
 
 /**
  * @brief   CAN1 FIFO0 中断回调 (板间通信 + 舵电机)
+ * @note    [V1.5.0] 拓扑图: CAN1 = (上下通信) + (GM6020)
  */
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
   if (hcan == &hcan1) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header1, can1_rx_data) == HAL_OK) 
     {
-      // 解码来自云台板的 RC 指令
+      // 1. 解码来自云台的 RC 指令
       CAN_Rx_Decode_Interboard(&rx_header1, can1_rx_data);
       
-      // 解码 GM6020 舵电机 (根据拓扑图 P6, 它们在 CAN1)
+      // 2. 解码 GM6020 舵电机的反馈
       CAN_Rx_Decode_Chassis(&rx_header1, can1_rx_data);
     }
   }
@@ -86,12 +82,13 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 
 /**
  * @brief   CAN2 FIFO1 中断回调 (底盘电机)
+ * @note    [V1.5.0] 拓扑图: CAN2 = (M3508) + (Yaw DM4310)
  */
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan) {
   if (hcan == &hcan2) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &rx_header2, can2_rx_data) == HAL_OK)
     {
-      // 解码 M3508 轮电机 和 Yaw 电机 (CAN2)
+      // 解码 M3508 轮电机 和 Yaw 电机
       CAN_Rx_Decode_Chassis(&rx_header2, can2_rx_data);
     }
   }
@@ -99,30 +96,43 @@ void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 }
 
 /**
- * @brief   板间通信解码 (CAN1)
+ * @brief   [V1.5.0] 板间通信解码 (CAN1)
  */
 static void CAN_Rx_Decode_Interboard(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_data) {
+  
+  // 考核要求 #1: 在板间通信解包处喂狗
+  if (rx_header->StdId == CAN_ID_RX_CMD_1 || 
+      rx_header->StdId == CAN_ID_RX_CMD_2 ||
+      rx_header->StdId == CAN_ID_RX_YAW_TARGET ||
+      rx_header->StdId == CAN_ID_RX_YAW_CURRENT)
+  {
+      HAL_IWDG_Refresh(&hiwdg);
+  }
+
   switch (rx_header->StdId)
   {
-    case CAN_ID_RX_GIMBAL_CMD_1: // [float vx][float vy]
-      // 考核要求 1: 在板间通信解包处喂狗
-      HAL_IWDG_Refresh(&hiwdg);
+    case CAN_ID_RX_CMD_1: // 0x300 (来自云台的 [vx][vy])
       memcpy((void*)&g_rc_cmd_vx, rx_data,     sizeof(float));
       memcpy((void*)&g_rc_cmd_vy, rx_data + 4, sizeof(float));
       break;
       
-    case CAN_ID_RX_GIMBAL_CMD_2: // [float wz][uint8_t mode]
-      // 考核要求 1: 在板间通信解包处喂狗
-      HAL_IWDG_Refresh(&hiwdg);
-      memcpy((void*)&g_rc_cmd_wz, rx_data,     sizeof(float));
-      g_control_mode = (RobotControlMode)rx_data[4];
+    case CAN_ID_RX_CMD_2: // 0x301 (来自云台的 [mode])
+      g_control_mode = (RobotControlMode)rx_data[0];
+      break;
+
+    case CAN_ID_RX_YAW_TARGET: // 0x302 (来自云台的 [target_yaw_f])
+      memcpy((void*)&g_target_gimbal_yaw_rad, rx_data, sizeof(float));
+      break;
+    
+    case CAN_ID_RX_YAW_CURRENT: // 0x303 (来自云台的 [current_yaw_f])
+      memcpy((void*)&g_current_gimbal_yaw_rad, rx_data, sizeof(float));
       break;
   }
 }
 
 
 /**
- * @brief   底盘电机数据解码 (CAN1 & CAN2)
+ * @brief   底盘电机数据解码 (由 CAN1 和 CAN2 共同调用)
  */
 static void CAN_Rx_Decode_Chassis(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_data) {
   uint32_t id = rx_header->StdId;
@@ -159,8 +169,6 @@ static void CAN_Rx_Decode_Chassis(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_da
     // 3. DM4310 Yaw 电机反馈 (CAN2: ID 0x01)
     case CHASSIS_YAW_MOTOR_ID:
       dm4310_fbdata(&g_yaw_motor, rx_data, rx_header->DLC);
-      // [关键] 调车说明: Yaw电机角度 = 云台底盘角度差
-      g_gimbal_yaw_rad = g_yaw_motor.para.pos;
       break;
       
     default:

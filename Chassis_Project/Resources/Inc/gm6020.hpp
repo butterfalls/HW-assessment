@@ -1,3 +1,12 @@
+/**
+ *******************************************************************************
+ * @file      : gm6020.hpp
+ * @brief     : GM6020 电机库
+ * @history   :
+ * Version     Date            Author          Note
+ * V1.5.0      2025-11-16      Gemini          1. [遵照要求] 从电压模式切换到电流模式
+ *******************************************************************************
+ */
 #ifndef _GM6020_HPP_
 #define _GM6020_HPP_
 
@@ -14,55 +23,43 @@
 #define GM6020_ENCODER_MAX 8191.0f
 #define GM6020_RAD_PER_TICK (2.0f * M_PI / GM6020_ENCODER_MAX)
 
+// [遵照要求] GM6020 电流模式最大值 (对应 -3A ~ +3A)
+#define GM6020_CURRENT_MAX 16384
+
 // -----------------------------------------------------------------
 // C++ 专属定义
 // -----------------------------------------------------------------
 #ifdef __cplusplus
 
-/**
- * @brief GM6020 C++ 类定义
- */
 class GM6020 {
    public:
     GM6020(uint32_t id);
     ~GM6020() = default;
 
-    /**
-     * @brief 解码来自 CAN 的反馈数据
-     */
     void decode(uint8_t *data);
     
     /**
-     * @brief 设置电机目标控制值 (电压)
-     * @param input_voltage 目标电压值 (-25000 to 25000)
+     * @brief [遵照要求] 设置电机目标控制值 (电流)
+     * @param input_current 目标电流值 (-16384 to 16384)
      */
-    void setInput(int16_t input_voltage);
+    void setInputCurrent(int16_t input_current);
     
     /**
-     * @brief 获取设置的目标控制值 (电压)
+     * @brief [遵照要求] 获取设置的目标控制值 (电流)
      */
-    int16_t getInput(void);
+    int16_t getInputCurrent(void);
 
     uint32_t getId(void);
     uint16_t getRawAngle(void);
-    
-    /**
-     * @brief 获取单圈电机角度 (弧度, 0 ~ 2*PI)
-     */
     float getAngleRad(void);
-
-    /**
-     * @brief 获取累计电机角度 (弧度, 用于PID)
-     */
     float getOutputAngleRad(void);
-
     int16_t getVelRPM(void);
     int16_t getCurrent(void);
     uint8_t getTemp(void);
 
    private:
     uint32_t id_;
-    int16_t input_voltage_; // [修改] 从 float 改为 int16_t
+    int16_t input_current_; // [遵照要求] 从 voltage 改为 current
     
     // 反馈数据
     uint16_t angle_raw_;
@@ -70,7 +67,7 @@ class GM6020 {
     int16_t current_;
     uint8_t temp_;
     
-    // [新增] 累计角度
+    // 累计角度
     float total_angle_rad_;
     float last_angle_rad_;
 };
@@ -87,12 +84,12 @@ typedef void* GM6020Handle;
 GM6020Handle GM6020_Create(uint32_t id);
 void GM6020_Destroy(GM6020Handle handle);
 void GM6020_Decode(GM6020Handle handle, uint8_t *data);
-void GM6020_SetInput(GM6020Handle handle, int16_t input_voltage); // [修改]
-int16_t GM6020_GetInput(GM6020Handle handle); // [修改]
+void GM6020_SetInputCurrent(GM6020Handle handle, int16_t input_current); // [遵照要求]
+int16_t GM6020_GetInputCurrent(GM6020Handle handle); // [遵照要求]
 uint32_t GM6020_GetId(GM6020Handle handle);
 uint16_t GM6020_GetRawAngle(GM6020Handle handle);
 float GM6020_GetAngleRad(GM6020Handle handle);
-float GM6020_GetOutputAngleRad(GM6020Handle handle); // [新增]
+float GM6020_GetOutputAngleRad(GM6020Handle handle); 
 int16_t GM6020_GetVelRPM(GM6020Handle handle);
 int16_t GM6020_GetCurrent(GM6020Handle handle);
 uint8_t GM6020_GetTemp(GM6020Handle handle);

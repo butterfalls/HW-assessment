@@ -1,17 +1,25 @@
+/**
+ *******************************************************************************
+ * @file      : gm6020.cpp
+ * @brief     : GM6020 电机库实现
+ * @history   :
+ * Version     Date            Author          Note
+ * V1.5.0      2025-11-16      Gemini          1. [遵照要求] 从电压模式切换到电流模式
+ *******************************************************************************
+ */
 #include "gm6020.hpp"
 #include <cstddef> // for NULL
-#include <math.h>  // for M_PI
+#include <math.h> 
 
 // -----------------------------------------------------------------
 // C++ 类 (GM6020) 的实现
 // -----------------------------------------------------------------
 GM6020::GM6020(uint32_t id) : id_(id) {
-    input_voltage_ = 0;
+    input_current_ = 0; // [遵照要求]
     angle_raw_ = 0;
     vel_rpm_ = 0;
     current_ = 0;
     temp_ = 0;
-    // [新增] 初始化累计角度
     total_angle_rad_ = 0.0f;
     last_angle_rad_ = 0.0f;
 }
@@ -22,19 +30,17 @@ void GM6020::decode(uint8_t *data) {
     current_ = (int16_t)(data[4] << 8 | data[5]);
     temp_ = data[6];
 
-    // --- [新增] 计算连续角度 ---
+    // --- 计算连续角度 ---
     float current_angle_rad = (float)angle_raw_ * GM6020_RAD_PER_TICK;
     
-    // 仅在首次解码时初始化 last_angle
     if (total_angle_rad_ == 0.0f && last_angle_rad_ == 0.0f) {
         last_angle_rad_ = current_angle_rad;
     }
 
-    // 处理编码器环绕
     float delta_angle = current_angle_rad - last_angle_rad_;
-    if (delta_angle > M_PI) { // 从 8191 环绕到 0
+    if (delta_angle > M_PI) { 
         delta_angle -= 2.0f * M_PI;
-    } else if (delta_angle < -M_PI) { // 从 0 环绕到 8191
+    } else if (delta_angle < -M_PI) { 
         delta_angle += 2.0f * M_PI;
     }
     
@@ -42,16 +48,16 @@ void GM6020::decode(uint8_t *data) {
     last_angle_rad_ = current_angle_rad;
 }
 
-void GM6020::setInput(int16_t input_voltage) {
-    // [修改] 适配 int16_t
-    // GM6020 电压范围: -25000 ~ +25000
-    if (input_voltage > 25000) input_voltage = 25000;
-    if (input_voltage < -25000) input_voltage = -25000;
-    input_voltage_ = input_voltage;
+// [遵照要求] 修改为电流模式
+void GM6020::setInputCurrent(int16_t input_current) {
+    // GM6020 电流范围: -16384 ~ +16384
+    if (input_current > GM6020_CURRENT_MAX) input_current = GM6020_CURRENT_MAX;
+    if (input_current < -GM6020_CURRENT_MAX) input_current = -GM6020_CURRENT_MAX;
+    input_current_ = input_current;
 }
 
-int16_t GM6020::getInput(void) {
-    return input_voltage_;
+int16_t GM6020::getInputCurrent(void) {
+    return input_current_;
 }
 
 uint32_t GM6020::getId(void) {
@@ -63,12 +69,10 @@ uint16_t GM6020::getRawAngle(void) {
 }
 
 float GM6020::getAngleRad(void) {
-    // 返回 [0, 2*PI] 范围内的单圈角度
     return (float)angle_raw_ * GM6020_RAD_PER_TICK;
 }
 
 float GM6020::getOutputAngleRad(void) {
-    // [新增] 返回累计总角度
     return total_angle_rad_;
 }
 
@@ -103,16 +107,18 @@ void GM6020_Decode(GM6020Handle handle, uint8_t *data) {
     }
 }
 
-void GM6020_SetInput(GM6020Handle handle, int16_t input_voltage) {
+// [遵照要求]
+void GM6020_SetInputCurrent(GM6020Handle handle, int16_t input_current) {
     if (handle != NULL) {
-        ((GM6020*)handle)->setInput(input_voltage);
+        ((GM6020*)handle)->setInputCurrent(input_current);
     }
 }
 
-int16_t GM6020_GetInput(GM6020Handle handle) {
+int16_t GM6020_GetInputCurrent(GM6020Handle handle) {
     if (handle == NULL) return 0;
-    return ((GM6020*)handle)->getInput();
+    return ((GM6020*)handle)->getInputCurrent();
 }
+// [遵照要求] 结束
 
 uint32_t GM6020_GetId(GM6020Handle handle) {
     if (handle == NULL) return 0;
