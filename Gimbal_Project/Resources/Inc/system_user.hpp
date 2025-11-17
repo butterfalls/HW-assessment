@@ -1,10 +1,7 @@
 /**
 *******************************************************************************
 * @file      ：system_user.hpp (Gimbal)
-* @brief     : 云台C板 - 全局定义和配置
-* @history   :
-* Version     Date            Author          Note
-* V1.4.6      2025-11-15      Gemini          1. [BUG修复] 修正所有 volatile 声明
+* @brief     : 云台C板 - 全局定义和配置 (V1.5.0 绝对姿态)
 *******************************************************************************
 */
 /* Define to prevent recursive inclusion -------------------------------------*/
@@ -33,18 +30,28 @@ extern "C" {
 #define M_PI 3.14159265358979323846f
 #endif
 
+// [V1.5.0] IMU 坐标
+#define ROLL 0
+#define PITCH 1
+#define YAW 2
+
 // ------------------- 云台电机 ID (舵轮拓扑图 P6) --------------------
 #define GIMBAL_PITCH_MOTOR_ID 2 // DM-J4310 (ID 2, CAN2)
 
-// ------------------- 板间通信 CAN ID (CAN1) --------------------
-#define CAN_ID_TX_GIMBAL_TO_CHASSIS 0x300 // (发送 [vx][vy])
-// (0x301 用于发送 [wz][mode])
+// ------------------- [V1.5.0] 板间通信 CAN ID (CAN1) --------------------
+#define CAN_ID_TX_CMD_1 0x300 // (发送 [vx][vy])
+#define CAN_ID_TX_CMD_2 0x301 // (发送 [mode])
+#define CAN_ID_TX_YAW_TARGET 0x302 // (发送 [g_target_gimbal_yaw_rad])
+#define CAN_ID_TX_YAW_CURRENT 0x303 // (发送 [g_current_gimbal_yaw_rad])
 
-// ------------------- 遥控器宏 --------------------
-#define RC_MAX_SPEED_X 1.0f // m/s
-#define RC_MAX_SPEED_Y 1.0f // m/s
-#define RC_MAX_SPEED_WZ (M_PI / 2.0f) // rad/s
-#define RC_MAX_PITCH_RAD (M_PI / 6.0f) // 假设 Pitch 范围 30 度
+// ------------------- [V1.5.0] 遥控器宏 --------------------
+// 遥控器右摇杆水平 -> 云台 Yaw 轴目标角速度 (rad/s)
+#define RC_MAX_YAW_SPEED (M_PI) // (180 deg/s)
+// 遥控器右摇杆垂直 -> 云台 Pitch 轴目标角度 (rad)
+#define RC_MAX_PITCH_RAD (M_PI / 6.0f) // (30 deg)
+// 遥控器左摇杆 -> 底盘平移速度 (m/s)
+#define RC_MAX_SPEED_X 1.0f 
+#define RC_MAX_SPEED_Y 1.0f 
 
 /* Exported constants --------------------------------------------------------*/
 extern const float kCtrlPeriod; // = 0.001f (1ms)
@@ -69,10 +76,11 @@ typedef struct _imu_datas_t
 } ImuDatas_t;
 
 /* Exported variables --------------------------------------------------------*/
-// [BUG 修复] 修正 volatile 声明
+// [BUG 修复] 必须声明为 volatile，因为它们在中断和主循环中使用
 extern volatile uint32_t tick;
-extern volatile RobotControlMode g_control_mode; // 声明为 volatile
-extern ImuDatas_t imu_datas;
+extern volatile RobotControlMode g_control_mode; 
+// [BUG 修复] imu_datas 在 imu_task.cpp 中定义, 这里只声明
+extern ImuDatas_t imu_datas; 
 
 
 #ifdef __cplusplus

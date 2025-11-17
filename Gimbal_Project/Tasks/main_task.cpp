@@ -1,10 +1,8 @@
 /**
 *******************************************************************************
 * @file      :main_task.cpp (Gimbal)
-* @brief     : 云台C板 - 主循环任务
-* @history   :
-* Version     Date            Author          Note
-* V1.4.5      2025-11-15      Gemini          1. [BUG修复] 移除 'imu_datas' 的多重定义
+* @brief     : 云台C板 - 主循环任务 (V1.5.0 绝对姿态)
+* @note      : [BUG 修复] 修复了 V1.4.x 的所有链接器错误
 *******************************************************************************
 */
 
@@ -26,28 +24,24 @@
 #include <string.h> // for memset
 
 /* Private macro -------------------------------------------------------------*/
-// PID 参数 (KP, KI, KD, MaxOut, MaxIntegral)
-#define PID_PITCH_PARAMS {30.0f, 0.0f, 0.5f, 5.0f, 1.0f} // Kp, Ki, Kd, max_out (T_ff), max_int
+// Pitch 轴 (DM4310) - 角度环 (rad) (输出 T_ff 力矩)
+#define PID_PITCH_PARAMS {30.0f, 0.0f, 0.5f, 5.0f, 1.0f} // Kp, Ki, Kd, max_out, max_int
 
 /* Private types -------------------------------------------------------------*/
+// [V1.5.0] 用于打包发送给底盘的遥控器数据
 typedef struct {
     float vx;       // m/s
     float vy;       // m/s
-    float wz;       // rad/s
     uint8_t mode;   // RobotControlMode
-    uint8_t _pad[3]; // 4字节对齐
-} ChassisCommand_t;
+} ChassisCmd_t;
 
 
 /* Private variables ---------------------------------------------------------*/
-// (由 system_user.hpp 声明, 由 V1.4.2 修正)
+// [BUG 修复] volatile 变量定义在唯一的 .cpp 文件中
 volatile uint32_t tick = 0;
 const float kCtrlPeriod = 0.001f; // 1ms
 volatile RobotControlMode g_control_mode = MODE_SAFETY_CALIB; 
-
-// [BUG 修复] 移除 imu_datas 的重复定义
-// ImuDatas_t imu_datas = {0}; // <--- 这一行 (V1.4.2 中的第54行) 被删除
-// [BUG 修复结束]
+// [BUG 修复] imu_datas 定义移至 imu_task.cpp
 
 // -- 遥控器 --
 namespace remote_control = hello_world::devices::remote_control;
@@ -59,9 +53,13 @@ remote_control::DT7 *rc_ptr = nullptr;
 Joint_Motor_t g_pitch_motor = {0};
 PidHandle g_pitch_pid = NULL;
 
+// -- [V1.5.0] 云台控制目标 --
+float g_target_gimbal_yaw_rad = 0.0f; // 绝对 Yaw 目标 (积分产生)
+float g_target_pitch_rad = 0.0f;      // 绝对 Pitch 目标 (摇杆给定)
+
 // CAN 发送缓冲区
-static ChassisCommand_t g_chassis_cmd = {0};
-static uint8_t g_chassis_tx_buf[8] = {0};
+static ChassisCmd_t g_chassis_cmd = {0};
+static uint8_t g_tx_buf[8] = {0}; // 通用发送缓冲
 
 /* Private function prototypes -----------------------------------------------*/
 static void RobotInit(void);
@@ -90,6 +88,9 @@ void MainInit(void) {
   HAL_TIM_Base_Start_IT(&htim6);
 }
 
+/**
+ * @brief [BUG 修复] 重命名为 Loop, 此函数由 C 的 HAL_TIM_PeriodElapsedCallback 调用
+ */
 void MainTask_Loop(void) {
   tick = tick + 1; // 修复 volatile 警告
   
@@ -97,17 +98,21 @@ void MainTask_Loop(void) {
       ImuCalibrate(); 
       if (tick == IMU_CALIB_TIME) {
           ImuFinalizeCalibration(); 
+          g_target_gimbal_yaw_rad = imu_datas.euler_vals[YAW];
       }
       RunSafetyMode();
   }
   else {
-      ImuUpdate();
+      ImuUpdate(); // 持续更新 imu_datas
       RobotTask();
   }
 
   SendGimbalCanCommands();
 }
 
+/**
+ * @brief [BUG 修复] 移至此处, 此函数由 C 的 HAL_UARTEx_RxEventCallback 调用
+ */
 void MainTask_UART_Callback(UART_HandleTypeDef *huart, uint16_t Size)
 {
   if (huart == &huart3) {
@@ -123,12 +128,12 @@ void MainTask_UART_Callback(UART_HandleTypeDef *huart, uint16_t Size)
 
 
 // -----------------------------------------------------------------
-// C++ 内部实现 (此部分无逻辑变更)
+// C++ 内部实现
 // -----------------------------------------------------------------
 
 static void RobotInit(void) {
   rc_ptr = new remote_control::DT7();
-  ImuInit(); 
+  ImuInit(); // 初始化云台板自己的 IMU
 
   PidParams pitch_pid_params = PID_PITCH_PARAMS;
   g_pitch_pid = Pid_Create(&pitch_pid_params);
@@ -140,7 +145,6 @@ static void RobotInit(void) {
   HAL_Delay(10);
   
   memset(&g_chassis_cmd, 0, sizeof(g_chassis_cmd));
-  memset(g_chassis_tx_buf, 0, sizeof(g_chassis_tx_buf));
 }
 
 
@@ -194,19 +198,30 @@ static void RunEStopMode(void) {
   SetAllMotorsZero();
   g_chassis_cmd = {0}; 
   g_chassis_cmd.mode = (uint8_t)MODE_ESTOP;
+  g_target_gimbal_yaw_rad = imu_datas.euler_vals[YAW]; 
+  g_target_pitch_rad = imu_datas.euler_vals[PITCH];
 }
 
 static void RunControlMode(void) {
-  // 1. 控制 Pitch 轴
-  float target_pitch = rc_ptr->rc_rv() * RC_MAX_PITCH_RAD; 
-  float fdb_pitch = imu_datas.euler_vals[1]; // PITCH=1
-  float t_ff = Pid_CalcAngle(g_pitch_pid, target_pitch, fdb_pitch);
+  // 1. [V1.5.0] 计算 Yaw 目标 (积分)
+  float yaw_speed_cmd = -rc_ptr->rc_rh() * RC_MAX_YAW_SPEED;
+  
+  if (g_control_mode != MODE_SPIN) {
+    g_target_gimbal_yaw_rad += yaw_speed_cmd * kCtrlPeriod; // (rad/s) * (s)
+  }
+  // (如果是小陀螺, g_target_gimbal_yaw_rad 保持不变)
+
+  // 2. [V1.5.0] 计算 Pitch 目标 (角度)
+  g_target_pitch_rad = rc_ptr->rc_rv() * RC_MAX_PITCH_RAD; 
+  
+  // 3. 运行 Pitch PID
+  float fdb_pitch = imu_datas.euler_vals[PITCH];
+  float t_ff = Pid_CalcAngle(g_pitch_pid, g_target_pitch_rad, fdb_pitch);
   mit_ctrl(&hcan2, g_pitch_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, t_ff);
 
-  // 2. 准备底盘指令
+  // 4. [V1.5.0] 准备底盘平移指令
   g_chassis_cmd.vx = rc_ptr->rc_lv() * RC_MAX_SPEED_X;
   g_chassis_cmd.vy = -rc_ptr->rc_lh() * RC_MAX_SPEED_Y; 
-  g_chassis_cmd.wz = -rc_ptr->rc_rh() * RC_MAX_SPEED_WZ;
   g_chassis_cmd.mode = (uint8_t)g_control_mode;
 }
 
@@ -217,13 +232,23 @@ static void SetAllMotorsZero(void) {
 }
 
 static void SendGimbalCanCommands(void) {
-  // (ID 0x300: [vx_f] [vy_f])
-  memcpy(g_chassis_tx_buf,     &g_chassis_cmd.vx, sizeof(float));
-  memcpy(g_chassis_tx_buf + 4, &g_chassis_cmd.vy, sizeof(float));
-  CAN_Send_Msg(&hcan1, g_chassis_tx_buf, CAN_ID_TX_GIMBAL_TO_CHASSIS, 8);
+  // [V1.5.0] 打包并发送所有4帧数据
+
+  // 1. (ID 0x300: [vx_f] [vy_f])
+  memcpy(g_tx_buf,     &g_chassis_cmd.vx, sizeof(float));
+  memcpy(g_tx_buf + 4, &g_chassis_cmd.vy, sizeof(float));
+  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_1, 8);
   
-  // (ID 0x301: [wz_f] [mode_u8] [pad*3])
-  memcpy(g_chassis_tx_buf,     &g_chassis_cmd.wz, sizeof(float));
-  memcpy(g_chassis_tx_buf + 4, &g_chassis_cmd.mode, sizeof(uint8_t));
-  CAN_Send_Msg(&hcan1, g_chassis_tx_buf, CAN_ID_TX_GIMBAL_TO_CHASSIS + 1, 8);
+  // 2. (ID 0x301: [mode_u8])
+  memcpy(g_tx_buf, &g_chassis_cmd.mode, sizeof(uint8_t));
+  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_2, 1);
+  
+  // 3. (ID 0x302: [target_yaw_f])
+  memcpy(g_tx_buf, &g_target_gimbal_yaw_rad, sizeof(float));
+  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_YAW_TARGET, 4);
+
+  // 4. (ID 0x303: [current_yaw_f])
+  float current_yaw = imu_datas.euler_vals[YAW];
+  memcpy(g_tx_buf, &current_yaw, sizeof(float));
+  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_YAW_CURRENT, 4);
 }

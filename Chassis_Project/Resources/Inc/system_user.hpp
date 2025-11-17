@@ -94,10 +94,11 @@ typedef struct _imu_datas_t
 } ImuDatas_t;
 
 /* Exported variables --------------------------------------------------------*/
+// [BUG 修复] 必须声明为 volatile
 extern volatile uint32_t tick;
 extern ImuDatas_t imu_datas; // 底盘板自己的IMU数据
 
-// [V1.5.0] 由 CAN 中断填充
+// [V1.5.0] 由 CAN 中断填充, 必须声明为 volatile
 extern volatile float g_rc_cmd_vx;
 extern volatile float g_rc_cmd_vy;
 extern volatile RobotControlMode g_control_mode;

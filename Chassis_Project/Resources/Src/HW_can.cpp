@@ -2,10 +2,11 @@
  *******************************************************************************
  * @file      :HW_can.cpp (Chassis)
  * @brief     : 底盘C板 - CAN 驱动和回调 (V1.5.0)
+ * @note      : [BUG 修复] 此文件现在是定义 CAN 函数的唯一位置
  *******************************************************************************
  */
 /* Includes ------------------------------------------------------------------*/
-#include "HW_can.hpp"
+#include "HW_can.hpp" // [BUG 修复] 必须包含对应的头文件
 #include "system_user.hpp" 
 #include "stdint.h"
 #include <string.h> // for memcpy
@@ -18,10 +19,10 @@
 /* Private variables ---------------------------------------------------------*/
 static CAN_RxHeaderTypeDef rx_header1, rx_header2;
 static uint8_t can1_rx_data[8], can2_rx_data[8];
-uint32_t pTxMailbox; 
+uint32_t pTxMailbox; // [BUG 修复] 全局变量定义
 
 /* External variables --------------------------------------------------------*/
-// 电机句柄 (from main_task.cpp)
+// [BUG 修复] extern 声明移至 .hpp, 此处引用 main_task.cpp 的定义
 extern M3508Handle g_wheel_motors[4]; 
 extern GM6020Handle g_steer_motors[4]; 
 extern Joint_Motor_t g_yaw_motor; 

@@ -2,6 +2,7 @@
 *******************************************************************************
 * @file      :main_task.cpp (Chassis)
 * @brief     : 底盘C板 - 主循环任务 (V1.5.0 绝对姿态)
+* @note      : [BUG 修复] 修复了 V1.4.x 的所有链接器错误
 *******************************************************************************
 */
 
@@ -38,6 +39,7 @@
 
 /* Private types -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
+// [BUG 修复] volatile 变量定义在唯一的 .cpp 文件中
 volatile uint32_t tick = 0;
 const float kCtrlPeriod = 0.001f; // 1ms
 
@@ -47,6 +49,7 @@ volatile float g_rc_cmd_vx = 0.0f;
 volatile float g_rc_cmd_vy = 0.0f;
 volatile float g_target_gimbal_yaw_rad = 0.0f; 
 volatile float g_current_gimbal_yaw_rad = 0.0f; 
+// [BUG 修复] imu_datas 定义移至 imu_task.cpp
 
 // -- 底盘C板设备句柄 --
 GM6020Handle g_steer_motors[4] = {NULL, NULL, NULL, NULL};
@@ -91,8 +94,11 @@ void MainInit(void) {
   HAL_TIM_Base_Start_IT(&htim6);
 }
 
+/**
+ * @brief [BUG 修复] 重命名为 Loop, 此函数由 C 的 HAL_TIM_PeriodElapsedCallback 调用
+ */
 void MainTask_Loop(void) {
-  tick = tick + 1;
+  tick = tick + 1; // 修复 volatile 警告
   
   if(tick <= IMU_CALIB_TIME) {
       ImuCalibrate(); 
@@ -207,7 +213,7 @@ static void ControlChassisYaw(void)
     
     // 这是一个线性PID, 不是角度PID
     // 误差 = 目标 (来自CAN) - 反馈 (来自CAN)
-    float yaw_error = g_target_gimbal_yaw_rad - g_current_gimbal_yaw_rad;
+    // float yaw_error = g_target_gimbal_yaw_rad - g_current_gimbal_yaw_rad; // [DEBUG] 警告修复
     
     // [V1.5.0] 考核要求: "在转动角度超过一圈的时候做越界的处理"
     // 我们使用线性PID (Pid_Calc) 而不是角度PID (Pid_CalcAngle)

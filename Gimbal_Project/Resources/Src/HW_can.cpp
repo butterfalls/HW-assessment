@@ -2,11 +2,12 @@
  *******************************************************************************
  * @file      :HW_can.cpp (Gimbal)
  * @brief     : 云台C板 - CAN 驱动和回调 (V1.5.0)
+ * @note      : [BUG 修复] 此文件现在是定义 CAN 函数的唯一位置
  *******************************************************************************
  */
 /* Includes ------------------------------------------------------------------*/
-#include "HW_can.hpp"
-#include "system_user.hpp" // [V1.5.0] 包含新宏定义
+#include "HW_can.hpp" // [BUG 修复] 必须包含对应的头文件
+#include "system_user.hpp"
 #include "stdint.h"
 #include <string.h> // for memcpy
 
@@ -16,7 +17,7 @@
 /* Private variables ---------------------------------------------------------*/
 static CAN_RxHeaderTypeDef rx_header1, rx_header2;
 static uint8_t can1_rx_data[8], can2_rx_data[8];
-uint32_t pTxMailbox; 
+uint32_t pTxMailbox; // [BUG 修复] 全局变量定义
 
 /* External variables --------------------------------------------------------*/
 // 声明在 main_task.cpp 中定义的电机句柄
