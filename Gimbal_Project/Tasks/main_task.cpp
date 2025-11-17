@@ -1,8 +1,11 @@
 /**
 *******************************************************************************
 * @file      :main_task.cpp (Gimbal)
-* @brief     : 云台C板 - 主循环任务 (V1.5.0 绝对姿态)
-* @note      : [BUG 修复] 修复了 V1.4.x 的所有链接器错误
+* @brief     : 云台C板 - 主循环任务 (V1.6.0 绝对姿态与无缝旋转)
+* @note      : [用户修正] 
+* 1. 实现了 IMU 数据的累积处理，支持 360° 无缝旋转，防止过零回转。
+* 2. 修正了云台控制逻辑，云台基于世界坐标系进行绝对姿态控制。
+* 3. 底盘速度指令基于云台坐标系发送，坐标转换下放至底盘板处理。
 *******************************************************************************
 */
 
@@ -25,23 +28,21 @@
 
 /* Private macro -------------------------------------------------------------*/
 // Pitch 轴 (DM4310) - 角度环 (rad) (输出 T_ff 力矩)
-#define PID_PITCH_PARAMS {30.0f, 0.0f, 0.5f, 5.0f, 1.0f} // Kp, Ki, Kd, max_out, max_int
+#define PID_PITCH_PARAMS {15.0f, 0.0f, 0.8f, 10.0f, 2.0f} // Kp, Ki, Kd, max_out, max_int
+#define PI 3.1415926535f
 
 /* Private types -------------------------------------------------------------*/
-// [V1.5.0] 用于打包发送给底盘的遥控器数据
+// 用于打包发送给底盘的遥控器数据
 typedef struct {
-    float vx;       // m/s
-    float vy;       // m/s
+    float vx;       // m/s (云台坐标系)
+    float vy;       // m/s (云台坐标系)
     uint8_t mode;   // RobotControlMode
 } ChassisCmd_t;
 
-
 /* Private variables ---------------------------------------------------------*/
-// [BUG 修复] volatile 变量定义在唯一的 .cpp 文件中
 volatile uint32_t tick = 0;
 const float kCtrlPeriod = 0.001f; // 1ms
 volatile RobotControlMode g_control_mode = MODE_SAFETY_CALIB; 
-// [BUG 修复] imu_datas 定义移至 imu_task.cpp
 
 // -- 遥控器 --
 namespace remote_control = hello_world::devices::remote_control;
@@ -53,13 +54,18 @@ remote_control::DT7 *rc_ptr = nullptr;
 Joint_Motor_t g_pitch_motor = {0};
 PidHandle g_pitch_pid = NULL;
 
-// -- [V1.5.0] 云台控制目标 --
-float g_target_gimbal_yaw_rad = 0.0f; // 绝对 Yaw 目标 (积分产生)
-float g_target_pitch_rad = 0.0f;      // 绝对 Pitch 目标 (摇杆给定)
+// -- 云台控制目标与状态 (核心变量) --
+float g_target_gimbal_yaw_rad = 0.0f;      // 绝对 Yaw 目标 (积分产生, 连续无界)
+float g_current_gimbal_yaw_cumulative = 0.0f; // 当前绝对 Yaw (处理过零后的连续值)
+float g_target_pitch_rad = 0.0f;           // 绝对 Pitch 目标 (摇杆给定)
+
+// -- 累积角度计算辅助变量 --
+static float last_raw_yaw = 0.0f;
+static int32_t yaw_round_count = 0;
 
 // CAN 发送缓冲区
 static ChassisCmd_t g_chassis_cmd = {0};
-static uint8_t g_tx_buf[8] = {0}; // 通用发送缓冲
+static uint8_t g_tx_buf[8] = {0}; 
 
 /* Private function prototypes -----------------------------------------------*/
 static void RobotInit(void);
@@ -70,7 +76,7 @@ static void RunEStopMode(void);
 static void RunControlMode(void);
 static void SetAllMotorsZero(void);
 static void SendGimbalCanCommands(void);
-
+static void UpdateCumulativeYaw(void); // 新增：处理角度过零突变
 
 // -----------------------------------------------------------------
 // C/C++ 桥接函数 (供 main.c 调用)
@@ -89,21 +95,25 @@ void MainInit(void) {
 }
 
 /**
- * @brief [BUG 修复] 重命名为 Loop, 此函数由 C 的 HAL_TIM_PeriodElapsedCallback 调用
+ * @brief 主循环 (1kHz)
  */
 void MainTask_Loop(void) {
-  tick = tick + 1; // 修复 volatile 警告
+  tick = tick +1;
   
   if(tick <= IMU_CALIB_TIME) {
       ImuCalibrate(); 
       if (tick == IMU_CALIB_TIME) {
           ImuFinalizeCalibration(); 
-          g_target_gimbal_yaw_rad = imu_datas.euler_vals[YAW];
+          // 校准完成后，初始化目标角度为当前角度，防止启动飞车
+          last_raw_yaw = imu_datas.euler_vals[YAW];
+          g_current_gimbal_yaw_cumulative = last_raw_yaw;
+          g_target_gimbal_yaw_rad = g_current_gimbal_yaw_cumulative;
       }
       RunSafetyMode();
   }
   else {
-      ImuUpdate(); // 持续更新 imu_datas
+      ImuUpdate(); // 更新 imu_datas
+      UpdateCumulativeYaw(); // 计算连续的累积角度
       RobotTask();
   }
 
@@ -111,13 +121,13 @@ void MainTask_Loop(void) {
 }
 
 /**
- * @brief [BUG 修复] 移至此处, 此函数由 C 的 HAL_UARTEx_RxEventCallback 调用
+ * @brief 遥控器接收回调
  */
 void MainTask_UART_Callback(UART_HandleTypeDef *huart, uint16_t Size)
 {
   if (huart == &huart3) {
     if (Size == kRxBufLen) {
-      HAL_IWDG_Refresh(&hiwdg);
+      HAL_IWDG_Refresh(&hiwdg); // 仅在此处喂狗
       if (rc_ptr != NULL) {
         rc_ptr->decode(rc_rx_buf);
       }
@@ -126,18 +136,39 @@ void MainTask_UART_Callback(UART_HandleTypeDef *huart, uint16_t Size)
   }
 }
 
+// -----------------------------------------------------------------
+// 核心功能实现
+// -----------------------------------------------------------------
 
-// -----------------------------------------------------------------
-// C++ 内部实现
-// -----------------------------------------------------------------
+/**
+ * @brief 处理 IMU 的 Yaw 轴角度突变，生成连续的累积角度
+ * @note  解决 -PI 到 PI 的跳变问题，实现 "不回转" 逻辑
+ */
+static void UpdateCumulativeYaw(void) {
+    float current_raw_yaw = imu_datas.euler_vals[YAW];
+    float delta = current_raw_yaw - last_raw_yaw;
+
+    // 检测过零突变 (阈值设为 1.5 PI，防止噪声误判)
+    if (delta < -1.5f * PI) {
+        yaw_round_count++; // 正向跨越 (179 -> -179)
+    } else if (delta > 1.5f * PI) {
+        yaw_round_count--; // 负向跨越 (-179 -> 179)
+    }
+
+    // 计算累积角度：原始角度 + 圈数 * 2PI
+    g_current_gimbal_yaw_cumulative = current_raw_yaw + yaw_round_count * 2.0f * PI;
+    
+    last_raw_yaw = current_raw_yaw;
+}
 
 static void RobotInit(void) {
   rc_ptr = new remote_control::DT7();
-  ImuInit(); // 初始化云台板自己的 IMU
+  ImuInit(); 
 
   PidParams pitch_pid_params = PID_PITCH_PARAMS;
   g_pitch_pid = Pid_Create(&pitch_pid_params);
 
+  // Pitch 轴使用 DM4310 (MIT模式)
   joint_motor_init(&g_pitch_motor, GIMBAL_PITCH_MOTOR_ID, MIT_MODE);
   
   HAL_Delay(100); 
@@ -146,7 +177,6 @@ static void RobotInit(void) {
   
   memset(&g_chassis_cmd, 0, sizeof(g_chassis_cmd));
 }
-
 
 static void RobotTask(void) {
   UpdateControlMode();
@@ -169,6 +199,7 @@ static void RobotTask(void) {
 static void UpdateControlMode(void) {
   if (rc_ptr == NULL) return;
 
+  // 左拨杆下拨 = 急停 (最高优先级)
   if (rc_ptr->rc_l_switch() == remote_control::kSwitchStateDown) {
     g_control_mode = MODE_ESTOP;
     return;
@@ -198,31 +229,47 @@ static void RunEStopMode(void) {
   SetAllMotorsZero();
   g_chassis_cmd = {0}; 
   g_chassis_cmd.mode = (uint8_t)MODE_ESTOP;
-  g_target_gimbal_yaw_rad = imu_datas.euler_vals[YAW]; 
+  // 急停时，目标角度跟随当前角度，防止恢复时剧烈运动
+  g_target_gimbal_yaw_rad = g_current_gimbal_yaw_cumulative; 
   g_target_pitch_rad = imu_datas.euler_vals[PITCH];
 }
 
+/**
+ * @brief 统一控制逻辑
+ * @note  无论什么模式，云台始终基于“绝对目标”进行控制。
+ * 差异在于发送给底盘的 mode 标志，底盘据此决定是否跟随或自旋。
+ */
 static void RunControlMode(void) {
-  // 1. [V1.5.0] 计算 Yaw 目标 (积分)
+  // 1. 更新 Yaw 目标 (基于世界坐标系积分)
+  // 右摇杆水平通道控制 Yaw 速度
   float yaw_speed_cmd = -rc_ptr->rc_rh() * RC_MAX_YAW_SPEED;
-  
-  if (g_control_mode != MODE_SPIN) {
-    g_target_gimbal_yaw_rad += yaw_speed_cmd * kCtrlPeriod; // (rad/s) * (s)
-  }
-  // (如果是小陀螺, g_target_gimbal_yaw_rad 保持不变)
+  g_target_gimbal_yaw_rad += yaw_speed_cmd * kCtrlPeriod; 
 
-  // 2. [V1.5.0] 计算 Pitch 目标 (角度)
+  // 2. 更新 Pitch 目标 (基于关节/IMU 角度)
+  // 右摇杆垂直通道控制 Pitch 绝对角度
   g_target_pitch_rad = rc_ptr->rc_rv() * RC_MAX_PITCH_RAD; 
   
-  // 3. 运行 Pitch PID
-  float fdb_pitch = imu_datas.euler_vals[PITCH];
-  float t_ff = Pid_CalcAngle(g_pitch_pid, g_target_pitch_rad, fdb_pitch);
-  mit_ctrl(&hcan2, g_pitch_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, t_ff);
+  // 限制 Pitch 角度 (防止机械碰撞)
+  // 假设限位在 +/- 25度 (约 0.43 rad)
+  if (g_target_pitch_rad > 0.43f) g_target_pitch_rad = 0.43f;
+  if (g_target_pitch_rad < -0.43f) g_target_pitch_rad = -0.43f;
 
-  // 4. [V1.5.0] 准备底盘平移指令
+  // 3. Pitch 轴闭环控制 (位置环)
+  // 反馈源：云台 IMU Pitch
+  float fdb_pitch = imu_datas.euler_vals[PITCH];
+  float t_ff_pitch = Pid_CalcAngle(g_pitch_pid, g_target_pitch_rad, fdb_pitch);
+  
+  // 发送给 Pitch 电机
+  mit_ctrl(&hcan2, g_pitch_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, t_ff_pitch);
+
+  // 4. 准备底盘指令 (云台坐标系下的速度)
+  // 左摇杆控制平移
   g_chassis_cmd.vx = rc_ptr->rc_lv() * RC_MAX_SPEED_X;
   g_chassis_cmd.vy = -rc_ptr->rc_lh() * RC_MAX_SPEED_Y; 
   g_chassis_cmd.mode = (uint8_t)g_control_mode;
+  
+  // 注意：这里不进行坐标系转换，也不计算底盘旋转速度。
+  // 这些全部交给底盘板，依据收到的 mode 和 角度差 进行解算。
 }
 
 
@@ -232,23 +279,24 @@ static void SetAllMotorsZero(void) {
 }
 
 static void SendGimbalCanCommands(void) {
-  // [V1.5.0] 打包并发送所有4帧数据
+  // 发送给底盘的板间通信协议
+  // 底盘板需要这些信息来控制 Yaw 电机和 轮子
 
-  // 1. (ID 0x300: [vx_f] [vy_f])
+  // 帧 1 (ID 0x300): 平移速度 [vx_float, vy_float] (云台系)
   memcpy(g_tx_buf,     &g_chassis_cmd.vx, sizeof(float));
   memcpy(g_tx_buf + 4, &g_chassis_cmd.vy, sizeof(float));
   CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_1, 8);
   
-  // 2. (ID 0x301: [mode_u8])
+  // 帧 2 (ID 0x301): 模式 [mode_u8]
   memcpy(g_tx_buf, &g_chassis_cmd.mode, sizeof(uint8_t));
   CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_2, 1);
   
-  // 3. (ID 0x302: [target_yaw_f])
+  // 帧 3 (ID 0x302): 云台期望 Yaw (绝对累积角度) [target_yaw_float]
   memcpy(g_tx_buf, &g_target_gimbal_yaw_rad, sizeof(float));
   CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_YAW_TARGET, 4);
 
-  // 4. (ID 0x303: [current_yaw_f])
-  float current_yaw = imu_datas.euler_vals[YAW];
-  memcpy(g_tx_buf, &current_yaw, sizeof(float));
+  // 帧 4 (ID 0x303): 云台当前 Yaw (绝对累积角度) [current_yaw_float]
+  // 发送累积角度给底盘，这样底盘的 PID 也是基于连续角度计算，不会出现过零回转
+  memcpy(g_tx_buf, (void*)&g_current_gimbal_yaw_cumulative, sizeof(float));
   CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_YAW_CURRENT, 4);
 }

@@ -1,8 +1,13 @@
 /**
 *******************************************************************************
 * @file      :main_task.cpp (Chassis)
-* @brief     : 底盘C板 - 主循环任务 (V1.5.0 绝对姿态)
+* @brief     : 底盘C板 - 主循环任务 (V1.6.2 坐标系修正)
 * @note      : [BUG 修复] 修复了 V1.4.x 的所有链接器错误
+* @note      : [V1.6.2 修正] 
+* 根据用户测试反馈 (2025-11-17), `CoordinateTransform` 
+* 不再使用 (云台IMU - 底盘IMU) 的差值。
+* 改为使用 Yaw 轴电机 (g_yaw_motor) 的编码器角度
+* (position_f) 作为云台相对底盘的夹角。
 *******************************************************************************
 */
 
@@ -24,6 +29,7 @@
 
 #include <math.h>
 #include <string.h> // for memset
+#include "arm_math.h"
 
 /* Private macro -------------------------------------------------------------*/
 // PID 参数 (KP, KI, KD, MaxOut, MaxIntegral)
@@ -49,6 +55,12 @@ volatile float g_rc_cmd_vx = 0.0f;
 volatile float g_rc_cmd_vy = 0.0f;
 volatile float g_target_gimbal_yaw_rad = 0.0f; 
 volatile float g_current_gimbal_yaw_rad = 0.0f; 
+
+// -- [V1.6.1] 底盘 IMU 累积角度 --
+float g_current_chassis_yaw_cumulative = 0.0f; // 底盘当前绝对 Yaw (连续值)
+static float last_raw_chassis_yaw = 0.0f;
+static int32_t chassis_yaw_round_count = 0;
+
 // [BUG 修复] imu_datas 定义移至 imu_task.cpp
 
 // -- 底盘C板设备句柄 --
@@ -69,14 +81,16 @@ static uint8_t g_gm6020_tx_buf[8] = {0}; // 0x1FE (CAN1, 电流模式)
 static void RobotInit(void);
 static void RobotTask(void);
 static void RunSafetyMode(void);
+static void RunControlMode(void);
 static void RunEStopMode(void);
-static void RunSeparateMode(void);
-static void RunFollowMode(void);
-static void RunSpinMode(void);
 static void SetAllMotorsZero(void);
 static void SendChassisCanCommands(void);
 static void RunSwerveControl(float vx, float vy, float wz);
 static void ControlChassisYaw(void); 
+// [V1.6.1 新增]
+static void UpdateCumulativeChassisYaw(void);
+static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis_vx, float* chassis_vy);
+
 
 // -----------------------------------------------------------------
 // C/C++ 桥接函数 (供 main.c 调用)
@@ -98,17 +112,25 @@ void MainInit(void) {
  * @brief [BUG 修复] 重命名为 Loop, 此函数由 C 的 HAL_TIM_PeriodElapsedCallback 调用
  */
 void MainTask_Loop(void) {
-  tick = tick + 1; // 修复 volatile 警告
+  tick = tick +1;
   
   if(tick <= IMU_CALIB_TIME) {
       ImuCalibrate(); 
       if (tick == IMU_CALIB_TIME) {
           ImuFinalizeCalibration(); 
+          
+          // [V1.6.1 修正] 校准完成后，初始化底盘的累积Yaw
+          last_raw_chassis_yaw = imu_datas.euler_vals[YAW];
+          g_current_chassis_yaw_cumulative = last_raw_chassis_yaw;
       }
       RunSafetyMode();
   }
   else {
       ImuUpdate(); // 获取底盘板自己的IMU数据
+      
+      // [V1.6.1 新增] 在 RobotTask 之前更新底盘的连续角度
+      UpdateCumulativeChassisYaw(); 
+      
       RobotTask();
   }
   
@@ -179,18 +201,64 @@ static void RobotTask(void) {
       RunEStopMode();
       break;
     case MODE_SEPARATE:
-      RunSeparateMode();
-      break;
     case MODE_FOLLOW:
-      RunFollowMode();
-      break;
     case MODE_SPIN:
-      RunSpinMode();
+      RunControlMode();
       break;
     default:
       RunEStopMode(); 
       break;
   }
+}
+
+/**
+ * @brief [V1.6.1 修正] 三种模式的底盘控制逻辑
+ */
+static void RunControlMode(void) {
+    float vx_cmd = 0.0f; // 最终底盘坐标系 vx
+    float vy_cmd = 0.0f; // 最终底盘坐标系 vy
+    float wz_cmd = 0.0f; // 最终底盘旋转 wz
+
+    // 1. 坐标转换
+    // 接收到的 (g_rc_cmd_vx, g_rc_cmd_vy) 是云台系的
+    // 转换到 (vx_cmd, vy_cmd) 底盘系
+    CoordinateTransform(g_rc_cmd_vx, g_rc_cmd_vy, &vx_cmd, &vy_cmd);
+    
+    // 2. 根据模式计算底盘旋转速度 (wz_cmd)
+    //    g_control_mode 是由 CAN 中断写入的 volatile 变量
+    switch(g_control_mode) {
+        
+        case MODE_SEPARATE:
+            // 分离模式: "底盘不参与旋转"
+            wz_cmd = 0.0f;
+            break;
+            
+        case MODE_FOLLOW:
+            // 跟随模式: "底盘是跟着云台一同旋转的"
+            // 底盘旋转 (wz_cmd) 的目标是让底盘的绝对角度 (g_current_chassis_yaw_cumulative)
+            // 去追随云台的 *目标* 绝对角度 (g_target_gimbal_yaw_rad)
+            wz_cmd = Pid_CalcAngle(g_follow_pid,
+                                   0.0f,                   // 目标角度 (0.0 rad)
+                                   g_yaw_motor.para.pos);  // 反馈角度 (来自Yaw电机)
+            break;
+            
+        case MODE_SPIN:
+            // 小陀螺模式: "要求底盘...自行旋转"
+            // 底盘使用预设的 SPIN_MODE_W_SPEED (来自 system_user.hpp)
+            wz_cmd = SPIN_MODE_W_SPEED;
+            
+            // [V1.5.0 协同逻辑]
+            // ControlChassisYaw() 正在自动反转电机
+            // 以保持云台在世界系中静止
+            break;
+        
+        default:
+            wz_cmd = 0.0f;
+            break;
+    }
+    
+    // 3. 将最终的底盘系指令 (vx, vy, wz) 设置给舵轮解算器
+    RunSwerveControl(vx_cmd, vy_cmd, wz_cmd);
 }
 
 static void RunSafetyMode(void) {
@@ -211,92 +279,15 @@ static void ControlChassisYaw(void)
 {
     if (g_chassis_yaw_pid == NULL) return;
     
-    // 这是一个线性PID, 不是角度PID
-    // 误差 = 目标 (来自CAN) - 反馈 (来自CAN)
-    // float yaw_error = g_target_gimbal_yaw_rad - g_current_gimbal_yaw_rad; // [DEBUG] 警告修复
-    
     // [V1.5.0] 考核要求: "在转动角度超过一圈的时候做越界的处理"
     // 我们使用线性PID (Pid_Calc) 而不是角度PID (Pid_CalcAngle)
-    // 这样, 误差可以是 100 rad, PID 会持续输出直到误差消除, 完美实现无缝旋转。
+    // 误差 = 目标 (来自CAN) - 反馈 (来自CAN)
     float yaw_speed_output = Pid_Calc(g_chassis_yaw_pid, 
                                      g_target_gimbal_yaw_rad, 
                                      g_current_gimbal_yaw_rad); 
     
     // 使用速度模式控制 Yaw 电机
     speed_ctrl(&hcan2, g_yaw_motor.para.id, yaw_speed_output);
-}
-
-
-/**
- * @brief [V1.5.0] 分离模式 (绝对姿态)
- * 底盘不旋转, 平移跟随云台坐标系
- */
-static void RunSeparateMode(void) {
-  // 1. 计算云台和底盘的绝对角度差
-  // delta_yaw = (云台世界角度 - 底盘世界角度)
-  float delta_yaw = g_current_gimbal_yaw_rad - imu_datas.euler_vals[YAW];
-
-  // 2. 将云台坐标系下的平移指令 (vx, vy) 转换到底盘坐标系
-  float cos_delta = cosf(delta_yaw);
-  float sin_delta = sinf(delta_yaw);
-  float chassis_vx = g_rc_cmd_vx * cos_delta - g_rc_cmd_vy * sin_delta;
-  float chassis_vy = g_rc_cmd_vx * sin_delta + g_rc_cmd_vy * cos_delta;
-  
-  // 3. 底盘旋转速度为 0
-  float chassis_wz = 0.0f;
-
-  // 4. 运行舵轮解算
-  RunSwerveControl(chassis_vx, chassis_vy, chassis_wz);
-}
-
-/**
- * @brief [V1.5.0] 跟随模式 (绝对姿态)
- * 底盘旋转跟随云台目标, 平移跟随云台坐标系
- */
-static void RunFollowMode(void) {
-  // 1. 计算云台和底盘的绝对角度差 (用于平移)
-  float delta_yaw = g_current_gimbal_yaw_rad - imu_datas.euler_vals[YAW];
-  float cos_delta = cosf(delta_yaw);
-  float sin_delta = sinf(delta_yaw);
-
-  // 2. 平移: 将云台坐标系指令转换到底盘坐标系
-  float chassis_vx = g_rc_cmd_vx * cos_delta - g_rc_cmd_vy * sin_delta;
-  float chassis_vy = g_rc_cmd_vx * sin_delta + g_rc_cmd_vy * cos_delta;
-  
-  // 3. 旋转: 底盘的目标是追上云台的目标
-  //    使用PID让底盘的 *当前* 绝对角度 (底盘IMU) 追上云台的 *目标* 绝对角度 (来自CAN)
-  float chassis_wz = Pid_CalcAngle(g_follow_pid, 
-                                   g_target_gimbal_yaw_rad, // 目标 (来自CAN)
-                                   imu_datas.euler_vals[YAW]); // 反馈 (底盘IMU)
-
-  // 4. 运行舵轮解算
-  RunSwerveControl(chassis_vx, chassis_vy, chassis_wz);
-}
-
-/**
- * @brief [V1.5.0] 小陀螺模式 (绝对姿态)
- * 底盘恒定旋转, 云台通过Yaw电机保持绝对角度不变
- */
-static void RunSpinMode(void) {
-  // 1. 计算云台和底盘的绝对角度差 (用于平移)
-  float delta_yaw = g_current_gimbal_yaw_rad - imu_datas.euler_vals[YAW];
-  float cos_delta = cosf(delta_yaw);
-  float sin_delta = sinf(delta_yaw);
-
-  // 2. 平移: 将云台坐标系指令转换到底盘坐标系
-  float chassis_vx = g_rc_cmd_vx * cos_delta - g_rc_cmd_vy * sin_delta;
-  float chassis_vy = g_rc_cmd_vx * sin_delta + g_rc_cmd_vy * cos_delta;
-  
-  // 3. 旋转: 底盘强制以恒定速度旋转
-  float chassis_wz = SPIN_MODE_W_SPEED;
-
-  // 4. 运行舵轮解算
-  RunSwerveControl(chassis_vx, chassis_vy, chassis_wz);
-  
-  // 5. [重要] 云台 Yaw 电机 (ControlChassisYaw) 仍在独立运行
-  //    此时云台板的 g_target_gimbal_yaw_rad 保持不变 (见Gimbal-main_task)
-  //    底盘的 g_current_gimbal_yaw_rad 随云台IMU变化
-  //    Yaw 电机 PID 会自动使云台在世界上保持静止
 }
 
 
@@ -380,4 +371,49 @@ static void SendChassisCanCommands(void) {
   
   // 3. DM4310 Yaw 电机 (CAN2)
   // (已在 ControlChassisYaw() 和 SetAllMotorsZero() 中通过 speed_ctrl() 发送)
+}
+
+/**
+ * @brief [V1.6.1] 处理底盘 IMU 的 Yaw 轴角度突变 (用于 MODE_FOLLOW)
+ */
+static void UpdateCumulativeChassisYaw(void) {
+    // 1. 获取底盘 IMU 的原始 Yaw
+    float current_raw_yaw = imu_datas.euler_vals[YAW];
+    float delta = current_raw_yaw - last_raw_chassis_yaw;
+
+    // 2. 检测过零突变 (阈值设为 1.5 PI)
+    if (delta < -1.5f * M_PI) { // 使用 arm_math.h 中的 M_PI
+        chassis_yaw_round_count++; // 正向跨越 (179 -> -179)
+    } else if (delta > 1.5f * M_PI) {
+        chassis_yaw_round_count--; // 负向跨越 (-179 -> 179)
+    }
+
+    // 3. 计算底盘的累积角度
+    g_current_chassis_yaw_cumulative = current_raw_yaw + chassis_yaw_round_count * 2.0f * M_PI;
+    
+    // 4. 保存当前值
+    last_raw_chassis_yaw = current_raw_yaw;
+}
+
+/**
+ * @brief [V1.6.2 修正] 坐标转换
+ * @desc  将云台坐标系下的 (vx, vy) 转换到底盘坐标系下
+ */
+static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis_vx, float* chassis_vy) {
+    // [V1.6.2 修正]
+    // 根据用户测试反馈, 不再使用 (云台IMU - 底盘IMU) 的差值,
+    // 而是直接使用 Yaw 轴电机 (DM4310) 的编码器反馈角度。
+    // g_yaw_motor.para.position_f 是 Yaw 电机反馈的弧度值。
+    
+    // [!!] 警告: 此方法要求 Yaw 电机在 RobotInit() 时
+    // 已被正确校准到 0.0 rad (即云台指向底盘正前方)。
+    float delta_yaw_rad = g_yaw_motor.para.pos;
+    
+    // 2. 旋转矩阵
+    float cos_delta = arm_cos_f32(delta_yaw_rad);
+    float sin_delta = arm_sin_f32(delta_yaw_rad);
+    
+    // 3. (Gimbal Frame -> Chassis Frame)
+    *chassis_vx = gimbal_vx * cos_delta - gimbal_vy * sin_delta;
+    *chassis_vy = gimbal_vx * sin_delta + gimbal_vy * cos_delta;
 }
