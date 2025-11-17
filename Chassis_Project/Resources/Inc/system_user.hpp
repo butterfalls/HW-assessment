@@ -35,6 +35,17 @@ extern "C" {
 #define PITCH 1
 #define YAW 2
 
+// PID 参数 (KP, KI, KD, MaxOut, MaxIntegral)
+// **注意**: 必须在机器人上进行实际整定!
+// 1. 航向电机 (GM6020) - 角度环 (电流模式)
+#define PID_STEER_PARAMS {1000.0f, 0.0f, 10.0f, 16384.0f, 5000.0f}
+// 2. 轮速电机 (M3508) - 速度环 (rad/s)
+#define PID_WHEEL_PARAMS {0.0f, 0.0f, 0.0f, 16384.0f, 8000.0f}
+// 3. 底盘跟随PID (输出 wz, rad/s)
+#define PID_FOLLOW_PARAMS {5.0f, 0.0f, 0.1f, M_PI * 2.0f, 1.0f}
+// 4. 云台Yaw电机PID (输出 rad/s)
+#define PID_CHASSIS_YAW_PARAMS {20.0f, 0.0f, 0.2f, 21.0f, 5.0f} // MaxOut (21 rad/s = DM4310 V_MAX)
+
 // ------------------- 考核说明中的机器人几何参数 (舵轮组) --------------------
 #define SWERVE_WHEELBASE_X (0.384f)
 #define SWERVE_WHEELBASE_Y (0.310f)
@@ -50,15 +61,15 @@ extern "C" {
 // ------------------- 底盘电机 ID (舵轮拓扑图 P6) --------------------
 // [V1.5.0] 拓扑修正: CAN1 = GM6020, CAN2 = M3508 + DM4310(Yaw)
 // CAN1:
-#define GM6020_STEER_FR_ID 1
-#define GM6020_STEER_FL_ID 2
-#define GM6020_STEER_BL_ID 3
-#define GM6020_STEER_BR_ID 4
+#define GM6020_STEER_FR_ID 4
+#define GM6020_STEER_FL_ID 1
+#define GM6020_STEER_BL_ID 2
+#define GM6020_STEER_BR_ID 3
 // CAN2:
-#define M3508_WHEEL_FR_ID 1
-#define M3508_WHEEL_FL_ID 2
-#define M3508_WHEEL_BL_ID 3
-#define M3508_WHEEL_BR_ID 4
+#define M3508_WHEEL_FR_ID 4
+#define M3508_WHEEL_FL_ID 1
+#define M3508_WHEEL_BL_ID 2
+#define M3508_WHEEL_BR_ID 3
 #define CHASSIS_YAW_MOTOR_ID 1 // DM-J4310 (ID 1, CAN2)
 
 

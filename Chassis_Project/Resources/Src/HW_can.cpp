@@ -20,6 +20,7 @@
 static CAN_RxHeaderTypeDef rx_header1, rx_header2;
 static uint8_t can1_rx_data[8], can2_rx_data[8];
 uint32_t pTxMailbox; // [BUG 修复] 全局变量定义
+uint32_t test[4];
 
 /* External variables --------------------------------------------------------*/
 // [BUG 修复] extern 声明移至 .hpp, 此处引用 main_task.cpp 的定义
@@ -71,8 +72,10 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
   if (hcan == &hcan1) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header1, can1_rx_data) == HAL_OK) 
     {
-      // 1. 解码来自云台的 RC 指令
-      CAN_Rx_Decode_Interboard(&rx_header1, can1_rx_data);
+      test[0] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[0]);
+      test[1] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[1]);
+      test[2] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[2]);
+      test[3] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[3]);
       
       // 2. 解码 GM6020 舵电机的反馈
       CAN_Rx_Decode_Chassis(&rx_header1, can1_rx_data);
@@ -89,6 +92,8 @@ void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan) {
   if (hcan == &hcan2) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &rx_header2, can2_rx_data) == HAL_OK)
     {
+      // 1. 解码来自云台的 RC 指令
+      CAN_Rx_Decode_Interboard(&rx_header2, can2_rx_data);
       // 解码 M3508 轮电机 和 Yaw 电机
       CAN_Rx_Decode_Chassis(&rx_header2, can2_rx_data);
     }

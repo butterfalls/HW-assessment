@@ -1,0 +1,8 @@
+/*
+!/components
+!/Resources
+!/Tasks
+!*.ioc
+!.gitignore
+!CMakeLists.txt
+!README.md
