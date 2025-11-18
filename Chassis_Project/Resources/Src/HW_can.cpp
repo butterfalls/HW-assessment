@@ -108,30 +108,25 @@ static void CAN_Rx_Decode_Interboard(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx
   
   // 考核要求 #1: 在板间通信解包处喂狗
   if (rx_header->StdId == CAN_ID_RX_CMD_1 || 
-      rx_header->StdId == CAN_ID_RX_CMD_2 ||
-      rx_header->StdId == CAN_ID_RX_YAW_TARGET ||
-      rx_header->StdId == CAN_ID_RX_YAW_CURRENT)
+      rx_header->StdId == CAN_ID_RX_YAW_TARGET)
   {
       HAL_IWDG_Refresh(&hiwdg);
   }
 
   switch (rx_header->StdId)
   {
-    case CAN_ID_RX_CMD_1: // 0x300 (来自云台的 [vx][vy])
-      memcpy((void*)&g_rc_cmd_vx, rx_data,     sizeof(float));
-      memcpy((void*)&g_rc_cmd_vy, rx_data + 4, sizeof(float));
+    case CAN_ID_RX_CMD_1: { // 0x150 (来自云台的 [vx][vy])
+      int16_t vx_int = (rx_data[0] << 8) | rx_data[1];
+      int16_t vy_int = (rx_data[2] << 8) | rx_data[3];
+      g_rc_cmd_vx = (float)vx_int / 1000.0f;
+      g_rc_cmd_vy = (float)vy_int / 1000.0f;
+      g_control_mode = (RobotControlMode)rx_data[4];
       break;
+    }
       
-    case CAN_ID_RX_CMD_2: // 0x301 (来自云台的 [mode])
-      g_control_mode = (RobotControlMode)rx_data[0];
-      break;
-
-    case CAN_ID_RX_YAW_TARGET: // 0x302 (来自云台的 [target_yaw_f])
+    case CAN_ID_RX_YAW_TARGET: // 0x151 (8字节数据)
       memcpy((void*)&g_target_gimbal_yaw_rad, rx_data, sizeof(float));
-      break;
-    
-    case CAN_ID_RX_YAW_CURRENT: // 0x303 (来自云台的 [current_yaw_f])
-      memcpy((void*)&g_current_gimbal_yaw_rad, rx_data, sizeof(float));
+      memcpy((void*)&g_current_gimbal_yaw_rad, rx_data + 4, sizeof(float));
       break;
   }
 }

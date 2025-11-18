@@ -38,13 +38,13 @@ extern "C" {
 // PID 参数 (KP, KI, KD, MaxOut, MaxIntegral)
 // **注意**: 必须在机器人上进行实际整定!
 // 1. 航向电机 (GM6020) - 角度环 (电流模式)
-#define PID_STEER_PARAMS {1000.0f, 0.0f, 10.0f, 16384.0f, 5000.0f}
+#define PID_STEER_PARAMS {800.0f, 0.0f, 0.0f, 16384.0f, 4000.0f} 
 // 2. 轮速电机 (M3508) - 速度环 (rad/s)
 #define PID_WHEEL_PARAMS {0.0f, 0.0f, 0.0f, 16384.0f, 8000.0f}
 // 3. 底盘跟随PID (输出 wz, rad/s)
 #define PID_FOLLOW_PARAMS {5.0f, 0.0f, 0.1f, M_PI * 2.0f, 1.0f}
 // 4. 云台Yaw电机PID (输出 rad/s)
-#define PID_CHASSIS_YAW_PARAMS {20.0f, 0.0f, 0.2f, 21.0f, 5.0f} // MaxOut (21 rad/s = DM4310 V_MAX)
+#define PID_CHASSIS_YAW_PARAMS {5.0f, 0.0f, 0.0f, 18.0f, 5.0f} // MaxOut (21 rad/s = DM4310 V_MAX)
 
 // ------------------- 考核说明中的机器人几何参数 (舵轮组) --------------------
 #define SWERVE_WHEELBASE_X (0.384f)
@@ -74,10 +74,8 @@ extern "C" {
 
 
 // ------------------- [V1.5.0] 板间通信 CAN ID (CAN1) --------------------
-#define CAN_ID_RX_CMD_1 0x300 // (接收 [vx][vy])
-#define CAN_ID_RX_CMD_2 0x301 // (接收 [mode])
-#define CAN_ID_RX_YAW_TARGET 0x302 // (接收 [g_target_gimbal_yaw_rad])
-#define CAN_ID_RX_YAW_CURRENT 0x303 // (接收 [g_current_gimbal_yaw_rad])
+#define CAN_ID_RX_CMD_1 0x150 // (接收 [vx][vy])
+#define CAN_ID_RX_YAW_TARGET 0x151
 
 // [V1.5.0] 小陀螺模式旋转速度 (rad/s)
 #define SPIN_MODE_W_SPEED (M_PI * 2.0f) // 1 r/s

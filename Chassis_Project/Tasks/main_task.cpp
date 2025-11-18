@@ -48,7 +48,10 @@ volatile float g_current_gimbal_yaw_rad = 0.0f;
 // -- [V1.6.1] 底盘 IMU 累积角度 --
 float g_current_chassis_yaw_cumulative = 0.0f; // 底盘当前绝对 Yaw (连续值)
 static float last_raw_chassis_yaw = 0.0f;
-static int32_t chassis_yaw_round_count = 0;
+// static int32_t chassis_yaw_round_count = 0;
+
+float input;
+float target_speed;
 
 // [BUG 修复] imu_datas 定义移至 imu_task.cpp
 
@@ -66,6 +69,17 @@ Joint_Motor_t g_yaw_motor = {0};
 static uint8_t g_m3508_tx_buf[8] = {0}; // 0x200 (CAN2)
 static uint8_t g_gm6020_tx_buf[8] = {0}; // 0x1FE (CAN1, 电流模式)
 
+float vx_cmd = 0.0f; // 最终底盘坐标系 vx
+float vy_cmd = 0.0f; // 最终底盘坐标系 vy
+float wz_cmd = 0.0f; // 最终底盘旋转 wz
+float target_speed_ref;
+
+PidParams steer_pid_params = PID_STEER_PARAMS;
+PidParams wheel_pid_params = PID_WHEEL_PARAMS;
+PidParams follow_pid_params = PID_FOLLOW_PARAMS;
+PidParams yaw_pid_params = PID_CHASSIS_YAW_PARAMS;
+
+
 /* Private function prototypes -----------------------------------------------*/
 static void RobotInit(void);
 static void RobotTask(void);
@@ -77,7 +91,7 @@ static void SendChassisCanCommands(void);
 static void RunSwerveControl(float vx, float vy, float wz);
 static void ControlChassisYaw(void); 
 // [V1.6.1 新增]
-static void UpdateCumulativeChassisYaw(void);
+// static void UpdateCumulativeChassisYaw(void);
 static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis_vx, float* chassis_vy);
 
 // [新增] 计算最短路径误差
@@ -113,7 +127,7 @@ void MainTask_Loop(void) {
           
           // [V1.6.1 修正] 校准完成后，初始化底盘的累积Yaw
           last_raw_chassis_yaw = imu_datas.euler_vals[YAW];
-          g_current_chassis_yaw_cumulative = last_raw_chassis_yaw;
+          g_current_chassis_yaw_cumulative = last_raw_chassis_yaw; 
       }
       RunSafetyMode();
   }
@@ -121,7 +135,7 @@ void MainTask_Loop(void) {
       ImuUpdate(); // 获取底盘板自己的IMU数据
       
       // [V1.6.1 新增] 在 RobotTask 之前更新底盘的连续角度
-      UpdateCumulativeChassisYaw(); 
+      g_current_chassis_yaw_cumulative = imu_datas.euler_vals[YAW];
       
       RobotTask();
   }
@@ -137,13 +151,9 @@ static void RobotInit(void) {
   ImuInit(); // 初始化底盘板自己的 IMU
 
   // 1. 初始化 PID
-  PidParams steer_pid_params = PID_STEER_PARAMS;
-  PidParams wheel_pid_params = PID_WHEEL_PARAMS;
-  PidParams follow_pid_params = PID_FOLLOW_PARAMS;
-  PidParams yaw_pid_params = PID_CHASSIS_YAW_PARAMS; // [V1.5.0]
 
   g_follow_pid = Pid_Create(&follow_pid_params);
-  g_chassis_yaw_pid = Pid_Create(&yaw_pid_params); // [V1.5.0] Yaw 电机 PID (线性)
+  g_chassis_yaw_pid = Pid_Create(&yaw_pid_params); 
 
   // 2. 初始化8个舵轮电机
   g_steer_motors[SWERVE_FR_MODULE] = GM6020_Create(GM6020_STEER_FR_ID);
@@ -207,10 +217,7 @@ static void RobotTask(void) {
  * @brief [V1.6.4 修正] 三种模式的底盘控制逻辑
  */
 static void RunControlMode(void) {
-    float vx_cmd = 0.0f; // 最终底盘坐标系 vx
-    float vy_cmd = 0.0f; // 最终底盘坐标系 vy
-    float wz_cmd = 0.0f; // 最终底盘旋转 wz
-
+    
     // 1. 坐标转换
     // 接收到的 (g_rc_cmd_vx, g_rc_cmd_vy) 是云台系的
     // 转换到 (vx_cmd, vy_cmd) 底盘系
@@ -229,6 +236,7 @@ static void RunControlMode(void) {
             // 跟随模式: "底盘是跟着云台一同旋转的"
             // 底盘旋转 (wz_cmd) 的目标是让底盘的绝对角度 (g_current_chassis_yaw_cumulative)
             // 去追随云台的 *目标* 绝对角度 (g_target_gimbal_yaw_rad)
+            Pid_SetParams(g_follow_pid,&follow_pid_params);
             wz_cmd = Pid_CalcAngle(g_follow_pid,
                                    0.0f,                   // 目标角度 (0.0 rad)
                                    g_yaw_motor.para.pos);  // 反馈角度 (来自Yaw电机)
@@ -267,28 +275,30 @@ static void RunEStopMode(void) {
  */
 static void ControlChassisYaw(void)
 {
-    // 1. 获取输入 (假设范围 -1.0 ~ 1.0)
-    // [警告] 请确保 g_target_gimbal_yaw_rad 是归一化的摇杆值！
-    float input = g_target_gimbal_yaw_rad;
+    // // 1. 获取输入 (假设范围 -1.0 ~ 1.0)
+    // // [警告] 请确保 g_target_gimbal_yaw_rad 是归一化的摇杆值！
+    // input = g_target_gimbal_yaw_rad;
+    // // 2. 限制输入范围 (安全防呆)
+    // if (input > 1.0f) input = 1.0f;
+    // if (input < -1.0f) input = -1.0f;
+    // // 3. 定义最大旋转速度 (rad/s)
+    // const float MAX_YAW_SPEED = 3.14159f * 2.0f; // 示例: 2转/秒
+    // // 4. 计算二次曲线因子 (保留符号)
+    // // fabsf(input) * input 既保留了原来的正负，又实现了平方效果
+    // float curve_factor = fabsf(input) * input;
+    // // 5. 计算目标速度
+    // target_speed = MAX_YAW_SPEED * curve_factor;
+    // target_speed *= 0.8f; // 按要求缩放至 80%
 
-    // 2. 限制输入范围 (安全防呆)
-    if (input > 1.0f) input = 1.0f;
-    if (input < -1.0f) input = -1.0f;
-
-    // 3. 定义最大旋转速度 (rad/s)
-    const float MAX_YAW_SPEED = 3.14159f * 2.0f; // 示例: 2转/秒
-
-    // 4. 计算二次曲线因子 (保留符号)
-    // fabsf(input) * input 既保留了原来的正负，又实现了平方效果
-    float curve_factor = fabsf(input) * input;
-
-    // 5. 计算目标速度
-    float target_speed = MAX_YAW_SPEED * curve_factor;
-    target_speed *= 0.8f; // 按要求缩放至 80%
-
-    // 6. 发送 MIT 指令模拟速度闭环
-    // kd = 2.0f 提供速度刚度，让电机努力维持在 target_speed
-    mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, target_speed, 0.0f, 2.0f, 0.0f);
+    float target_yaw = g_target_gimbal_yaw_rad;
+    float current_yaw = g_current_gimbal_yaw_rad;
+    float yaw_error = CalculateShortestAngleError(target_yaw, current_yaw);
+    Pid_SetParams(g_chassis_yaw_pid,&yaw_pid_params);
+    target_speed_ref = Pid_Calc(g_chassis_yaw_pid, yaw_error, 0.0f);
+    const float MAX_YAW_SPEED = 20.0f;
+    if (target_speed_ref > MAX_YAW_SPEED) target_speed_ref = MAX_YAW_SPEED;
+    if (target_speed_ref < -MAX_YAW_SPEED) target_speed_ref = -MAX_YAW_SPEED;
+    mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, target_speed_ref, 0.0f, 2.0f, 0.0f);
 }
 
 
@@ -344,6 +354,7 @@ static void RunSwerveControl(float vx, float vy, float wz)
     // 注意：如果要使用 PID 计算，现在的 Error 已经是差值了，所以：
     // 目标设为 steer_error，反馈设为 0；或者 目标设为 steer_fdb + steer_error，反馈设为 steer_fdb
     // 最简单的方式是直接对误差进行 PID 计算
+    Pid_SetParams(g_steer_pids[i],&steer_pid_params);
     float steer_output = Pid_Calc(g_steer_pids[i], steer_error, 0.0f);
     
     GM6020_SetInputCurrent(g_steer_motors[i], (int16_t)steer_output); 
@@ -353,6 +364,7 @@ static void RunSwerveControl(float vx, float vy, float wz)
     // 不能使用 GetMotorAngleRad (位置)，否则车轮会锁死无法连续滚动。
     // 这里保持 GetOutputVelRadS (速度反馈)。速度值不会无限累积，不会溢出。
     float wheel_fdb = M3508_GetOutputVelRadS(g_wheel_motors[i]);
+    Pid_SetParams(g_wheel_pids[i], &wheel_pid_params);
     float wheel_output = Pid_Calc(g_wheel_pids[i], target_state.speed_rads, wheel_fdb);
     M3508_SetInputCurrent(g_wheel_motors[i], (int16_t)wheel_output);
   }
@@ -368,7 +380,7 @@ static void SetAllMotorsZero(void) {
       if(g_wheel_motors[i]) M3508_SetInputCurrent(g_wheel_motors[i], 0);
   }
   // 2. Yaw 电机 (使用 mit_ctrl 模拟速度模式，发送速度0)
-  mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.5f, 0.0f);
+  mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
   
   // 3. 重置所有 10 个 PID
   for (int i = 0; i < 4; ++i) {
@@ -409,27 +421,27 @@ static void SendChassisCanCommands(void) {
   // (已在 ControlChassisYaw() 和 SetAllMotorsZero() 中通过 speed_ctrl() 发送)
 }
 
-/**
- * @brief [V1.6.1] 处理底盘 IMU 的 Yaw 轴角度突变 (用于 MODE_FOLLOW)
- */
-static void UpdateCumulativeChassisYaw(void) {
-    // 1. 获取底盘 IMU 的原始 Yaw
-    float current_raw_yaw = imu_datas.euler_vals[YAW];
-    float delta = current_raw_yaw - last_raw_chassis_yaw;
+// /**
+//  * @brief [V1.6.1] 处理底盘 IMU 的 Yaw 轴角度突变 (用于 MODE_FOLLOW)
+//  */
+// static void UpdateCumulativeChassisYaw(void) {
+//     // 1. 获取底盘 IMU 的原始 Yaw
+//     float current_raw_yaw = imu_datas.euler_vals[YAW];
+//     float delta = current_raw_yaw - last_raw_chassis_yaw;
 
-    // 2. 检测过零突变 (阈值设为 1.5 PI)
-    if (delta < -1.5f * M_PI) { // 使用 arm_math.h 中的 M_PI
-        chassis_yaw_round_count++; // 正向跨越 (179 -> -179)
-    } else if (delta > 1.5f * M_PI) {
-        chassis_yaw_round_count--; // 负向跨越 (-179 -> 179)
-    }
+//     // 2. 检测过零突变 (阈值设为 1.5 PI)
+//     if (delta < -1.5f * M_PI) { // 使用 arm_math.h 中的 M_PI
+//         chassis_yaw_round_count++; // 正向跨越 (179 -> -179)
+//     } else if (delta > 1.5f * M_PI) {
+//         chassis_yaw_round_count--; // 负向跨越 (-179 -> 179)
+//     }
 
-    // 3. 计算底盘的累积角度
-    g_current_chassis_yaw_cumulative = current_raw_yaw + chassis_yaw_round_count * 2.0f * M_PI;
+//     // 3. 计算底盘的累积角度
+//     g_current_chassis_yaw_cumulative = current_raw_yaw + chassis_yaw_round_count * 2.0f * M_PI;
     
-    // 4. 保存当前值
-    last_raw_chassis_yaw = current_raw_yaw;
-}
+//     // 4. 保存当前值
+//     last_raw_chassis_yaw = current_raw_yaw;
+// }
 
 /**
  * @brief [V1.6.2 修正] 坐标转换

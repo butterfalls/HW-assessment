@@ -80,7 +80,7 @@ static void RunEStopMode(void);
 static void RunControlMode(void);
 static void SetAllMotorsZero(void);
 static void SendGimbalCanCommands(void);
-static void UpdateCumulativeYaw(void); // 新增：处理角度过零突变
+// static void UpdateCumulativeYaw(void); // 新增：处理角度过零突变
 
 // -----------------------------------------------------------------
 // C/C++ 桥接函数 (供 main.c 调用)
@@ -117,7 +117,8 @@ void MainTask_Loop(void) {
   }
   else {
       ImuUpdate(); // 更新 imu_datas
-      UpdateCumulativeYaw(); // 计算连续的累积角度
+      // UpdateCumulativeYaw(); // 计算连续的累积角度
+      g_current_gimbal_yaw_cumulative = imu_datas.euler_vals[YAW];
       RobotTask();
   }
 
@@ -148,22 +149,22 @@ void MainTask_UART_Callback(UART_HandleTypeDef *huart, uint16_t Size)
  * @brief 处理 IMU 的 Yaw 轴角度突变，生成连续的累积角度
  * @note  解决 -PI 到 PI 的跳变问题，实现 "不回转" 逻辑
  */
-static void UpdateCumulativeYaw(void) {
-    float current_raw_yaw = imu_datas.euler_vals[YAW];
-    float delta = current_raw_yaw - last_raw_yaw;
+// static void UpdateCumulativeYaw(void) {
+//     float current_raw_yaw = imu_datas.euler_vals[YAW];
+//     float delta = current_raw_yaw - last_raw_yaw;
 
-    // 检测过零突变 (阈值设为 1.5 PI，防止噪声误判)
-    if (delta < -1.5f * PI) {
-        yaw_round_count++; // 正向跨越 (179 -> -179)
-    } else if (delta > 1.5f * PI) {
-        yaw_round_count--; // 负向跨越 (-179 -> 179)
-    }
+//     // 检测过零突变 (阈值设为 1.5 PI，防止噪声误判)
+//     if (delta < -1.5f * PI) {
+//         yaw_round_count++; // 正向跨越 (179 -> -179)
+//     } else if (delta > 1.5f * PI) {
+//         yaw_round_count--; // 负向跨越 (-179 -> 179)
+//     }
 
-    // 计算累积角度：原始角度 + 圈数 * 2PI
-    g_current_gimbal_yaw_cumulative = current_raw_yaw + yaw_round_count * 2.0f * PI;
+//     // 计算累积角度：原始角度 + 圈数 * 2PI
+//     g_current_gimbal_yaw_cumulative = current_raw_yaw + yaw_round_count * 2.0f * PI;
     
-    last_raw_yaw = current_raw_yaw;
-}
+//     last_raw_yaw = current_raw_yaw;
+// }
 
 static void RobotInit(void) {
   rc_ptr = new remote_control::DT7();
@@ -266,11 +267,18 @@ static float NormalizeAngle(float angle) {
  * 差异在于发送给底盘的 mode 标志，底盘据此决定是否跟随或自旋。
  */
 static void RunControlMode(void) {
+  float yaw_stick = -rc_ptr->rc_rh();
+  if (fabsf(yaw_stick) < 0.05f) yaw_stick = 0.0f;
+  g_target_gimbal_yaw_rad += yaw_stick * RC_MAX_YAW_SPEED * kCtrlPeriod;
+  if (g_target_gimbal_yaw_rad > PI) {
+      g_target_gimbal_yaw_rad -= 2.0f * PI;
+  } else if (g_target_gimbal_yaw_rad < -PI) {
+      g_target_gimbal_yaw_rad += 2.0f * PI;
+  }
   // 1. 更新 Yaw 目标 (基于世界坐标系积分)
   // 右摇杆水平通道控制 Yaw 速度
-  float yaw_speed_cmd = -rc_ptr->rc_rh() * RC_MAX_YAW_SPEED;
-  g_target_gimbal_yaw_rad += yaw_speed_cmd * kCtrlPeriod; 
-
+  // float yaw_speed_cmd = -rc_ptr->rc_rh() * RC_MAX_YAW_SPEED;
+  // g_target_gimbal_yaw_rad += yaw_speed_cmd * kCtrlPeriod;   
   // 2. 更新 Pitch 目标 (基于关节/IMU 角度)
   // 右摇杆垂直通道控制 Pitch 绝对角度
   g_target_pitch_rad = rc_ptr->rc_rv() * RC_MAX_PITCH_RAD; 
@@ -322,22 +330,25 @@ static void SetAllMotorsZero(void) {
 static void SendGimbalCanCommands(void) {
   // 发送给底盘的板间通信协议
   // 底盘板需要这些信息来控制 Yaw 电机和 轮子
-
-  // 帧 1 (ID 0x300): 平移速度 [vx_float, vy_float] (云台系)
-  memcpy(g_tx_buf,     &g_chassis_cmd.vx, sizeof(float));
-  memcpy(g_tx_buf + 4, &g_chassis_cmd.vy, sizeof(float));
+  int16_t vx_int = (int16_t)(g_chassis_cmd.vx * 1000.0f); // 放大1000倍
+  int16_t vy_int = (int16_t)(g_chassis_cmd.vy * 1000.0f); 
+  g_tx_buf[0] = (vx_int >> 8); 
+  g_tx_buf[1] = (vx_int & 0xFF);
+  g_tx_buf[2] = (vy_int >> 8); 
+  g_tx_buf[3] = (vy_int & 0xFF);
+  g_tx_buf[4] = g_chassis_cmd.mode;
   CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_1, 8);
+  // 帧 1 (ID 0x300): 平移速度 [vx_float, vy_float] (云台系)
+  // memcpy(g_tx_buf,     &g_chassis_cmd.vx, sizeof(float));
+  // memcpy(g_tx_buf + 4, &g_chassis_cmd.vy, sizeof(float));
+  // CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_1, 8);
   
-  // 帧 2 (ID 0x301): 模式 [mode_u8]
-  memcpy(g_tx_buf, &g_chassis_cmd.mode, sizeof(uint8_t));
-  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_2, 1);
+  // // 帧 2 (ID 0x301): 模式 [mode_u8]
+  // memcpy(g_tx_buf, &g_chassis_cmd.mode, sizeof(uint8_t));
+  // CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_CMD_2, 1);
   
   // 帧 3 (ID 0x302): 云台期望 Yaw (绝对累积角度) [target_yaw_float]
   memcpy(g_tx_buf, &g_target_gimbal_yaw_rad, sizeof(float));
-  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_YAW_TARGET, 4);
-
-  // 帧 4 (ID 0x303): 云台当前 Yaw (绝对累积角度) [current_yaw_float]
-  // 发送累积角度给底盘，这样底盘的 PID 也是基于连续角度计算，不会出现过零回转
-  memcpy(g_tx_buf, (void*)&g_current_gimbal_yaw_cumulative, sizeof(float));
-  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_YAW_CURRENT, 4);
+  memcpy(g_tx_buf + 4, &g_current_gimbal_yaw_cumulative, sizeof(float));
+  CAN_Send_Msg(&hcan1, g_tx_buf, CAN_ID_TX_YAW_TARGET, 8);
 }

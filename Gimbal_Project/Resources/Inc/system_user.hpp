@@ -39,10 +39,8 @@ extern "C" {
 #define GIMBAL_PITCH_MOTOR_ID 2 // DM-J4310 (ID 2, CAN2)
 
 // ------------------- [V1.5.0] 板间通信 CAN ID (CAN1) --------------------
-#define CAN_ID_TX_CMD_1 0x300 // (发送 [vx][vy])
-#define CAN_ID_TX_CMD_2 0x301 // (发送 [mode])
-#define CAN_ID_TX_YAW_TARGET 0x302 // (发送 [g_target_gimbal_yaw_rad])
-#define CAN_ID_TX_YAW_CURRENT 0x303 // (发送 [g_current_gimbal_yaw_rad])
+#define CAN_ID_TX_CMD_1 0x150 // (发送 [vx][vy])
+#define CAN_ID_TX_YAW_TARGET 0x151 // (发送 [g_target_gimbal_yaw_rad])
 
 // ------------------- [V1.5.0] 遥控器宏 --------------------
 // 遥控器右摇杆水平 -> 云台 Yaw 轴目标角速度 (rad/s)

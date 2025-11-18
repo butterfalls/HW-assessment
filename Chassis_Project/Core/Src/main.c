@@ -75,7 +75,7 @@ int main(void) {
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
+  /* Reset of all peripherals, Initializes the Flash  interface and the Systick.
    */
   HAL_Init();
 
@@ -90,7 +90,7 @@ int main(void) {
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
+  /* Initialize all configured peripherals */                                                                              
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_CAN1_Init();
@@ -104,7 +104,7 @@ int main(void) {
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  MainInit();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -164,7 +164,7 @@ void SystemClock_Config(void) {
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM6) 
+  if (&htim6 == htim) 
   {
     MainTask_Loop(); 
   }
