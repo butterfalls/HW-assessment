@@ -49,6 +49,7 @@ class Pid {
     ~Pid() = default;
 
     void setParams(PidParams &params);
+    void setDt(float dt); // 设置采样时间 (秒)
     PidParams getParams(void);
     
     /**
@@ -67,6 +68,7 @@ class Pid {
    private:
     PidParams params_;
     PidData data_;
+    float dt_; // 采样时间 (秒)，默认 0.001f
     float clamp(float value, float min, float max);
 };
 
@@ -86,6 +88,7 @@ float Pid_Calc(PidHandle handle, float ref, float fdb);
 float Pid_CalcAngle(PidHandle handle, float ref, float fdb);
 void Pid_Reset(PidHandle handle);
 void Pid_SetParams(PidHandle handle, PidParams *params);
+void Pid_SetDt(PidHandle handle, float dt);
 
 
 #ifdef __cplusplus

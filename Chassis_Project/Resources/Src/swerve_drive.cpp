@@ -58,13 +58,13 @@ void SwerveDrive::calculate(const float vx, const float vy, const float wz, cons
         while (delta_angle > M_PI) delta_angle -= 2.0f * M_PI;
         while (delta_angle < -M_PI) delta_angle += 2.0f * M_PI;
 
-        if (fabsf(delta_angle) > (M_PI / 2.0f)) {
-            // 如果转动超过90度，不如反转轮子速度，转动 (180 - delta) 度
-            target_speed = -target_speed;
-            target_angle += M_PI;
-            // 重新规范化 target_angle
-            if (target_angle > M_PI) target_angle -= 2.0f * M_PI;
-        }
+        // if (fabsf(delta_angle) > (M_PI / 2.0f)) {
+        //     // 如果转动超过90度，不如反转轮子速度，转动 (180 - delta) 度
+        //     target_speed = -target_speed;
+        //     target_angle += M_PI;
+        //     // 重新规范化 target_angle
+        //     if (target_angle > M_PI) target_angle -= 2.0f * M_PI;
+        // }
         
         // 确保目标角度仍然在 [-pi, pi] 范围内
         while (target_angle > M_PI) target_angle -= 2.0f * M_PI;

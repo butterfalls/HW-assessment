@@ -38,13 +38,13 @@ extern "C" {
 // PID 参数 (KP, KI, KD, MaxOut, MaxIntegral)
 // **注意**: 必须在机器人上进行实际整定!
 // 1. 航向电机 (GM6020) - 角度环 (电流模式)
-#define PID_STEER_PARAMS {800.0f, 0.0f, 0.0f, 16384.0f, 4000.0f} 
+#define PID_STEER_PARAMS {100.0f, 0.7f, 0.0f, 16384.0f, 4000.0f} 
 // 2. 轮速电机 (M3508) - 速度环 (rad/s)
 #define PID_WHEEL_PARAMS {0.0f, 0.0f, 0.0f, 16384.0f, 8000.0f}
 // 3. 底盘跟随PID (输出 wz, rad/s)
 #define PID_FOLLOW_PARAMS {5.0f, 0.0f, 0.1f, M_PI * 2.0f, 1.0f}
 // 4. 云台Yaw电机PID (输出 rad/s)
-#define PID_CHASSIS_YAW_PARAMS {5.0f, 0.0f, 0.0f, 18.0f, 5.0f} // MaxOut (21 rad/s = DM4310 V_MAX)
+#define PID_CHASSIS_YAW_PARAMS {5.0f, 0.1f, 0.0f, 18.0f, 5.0f} // MaxOut (21 rad/s = DM4310 V_MAX)
 
 // ------------------- 考核说明中的机器人几何参数 (舵轮组) --------------------
 #define SWERVE_WHEELBASE_X (0.384f)

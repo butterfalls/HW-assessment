@@ -69,6 +69,13 @@ Joint_Motor_t g_yaw_motor = {0};
 static uint8_t g_m3508_tx_buf[8] = {0}; // 0x200 (CAN2)
 static uint8_t g_gm6020_tx_buf[8] = {0}; // 0x1FE (CAN1, 电流模式)
 
+// -----------------------------
+// 调试用全局变量 (可在调试器/其他模块观察)
+// 记录每个舵轮的目标角度和当前反馈角度 (rad)
+volatile float g_debug_steer_target_angle[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+volatile float g_debug_steer_fdb[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+// -----------------------------
+
 float vx_cmd = 0.0f; // 最终底盘坐标系 vx
 float vy_cmd = 0.0f; // 最终底盘坐标系 vy
 float wz_cmd = 0.0f; // 最终底盘旋转 wz
@@ -344,7 +351,10 @@ static void RunSwerveControl(float vx, float vy, float wz)
     // --- 1. 航向电机 (GM6020) 最短路径控制 ---
     // 获取当前角度 (0 ~ 2PI)
     float steer_fdb = GM6020_GetAngleRad(g_steer_motors[i]);
-    
+    // 保存调试值：目标角度和反馈角度（可在调试器或外部读取）
+    g_debug_steer_target_angle[i] = target_state.angle_rad + PI;
+    g_debug_steer_fdb[i] = steer_fdb;
+      
     // 计算最短误差 (-PI ~ PI)
     float steer_error = CalculateShortestAngleError(target_state.angle_rad, steer_fdb);
     
