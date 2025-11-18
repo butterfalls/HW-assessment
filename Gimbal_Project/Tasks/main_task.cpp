@@ -28,7 +28,7 @@
 
 /* Private macro -------------------------------------------------------------*/
 // Pitch 轴 (DM4310) - 角度环 (rad) (输出 T_ff 力矩)
-#define PID_PITCH_PARAMS {15.0f, 0.0f, 0.8f, 10.0f, 2.0f} // Kp, Ki, Kd, max_out, max_int
+#define PID_PITCH_PARAMS {8.0f, 0.0f, 0.8f, 10.0f, 2.0f} // Kp, Ki, Kd, max_out, max_int
 #define PI 3.1415926535f
 
 /* Private types -------------------------------------------------------------*/
@@ -43,7 +43,11 @@ typedef struct {
 volatile uint32_t tick = 0;
 const float kCtrlPeriod = 0.001f; // 1ms
 volatile RobotControlMode g_control_mode = MODE_SAFETY_CALIB; 
-
+PidParams pitch_pid_params = PID_PITCH_PARAMS;
+float pitch_fb;
+float pitch_error;
+float target_speed;
+float real_motor_target;
 // -- 遥控器 --
 namespace remote_control = hello_world::devices::remote_control;
 static const uint8_t kRxBufLen = remote_control::kRcRxDataLen;
@@ -165,7 +169,6 @@ static void RobotInit(void) {
   rc_ptr = new remote_control::DT7();
   ImuInit(); 
 
-  PidParams pitch_pid_params = PID_PITCH_PARAMS;
   g_pitch_pid = Pid_Create(&pitch_pid_params);
 
   // Pitch 轴使用 DM4310 (MIT模式)
@@ -234,6 +237,29 @@ static void RunEStopMode(void) {
   g_target_pitch_rad = imu_datas.euler_vals[PITCH];
 }
 
+float CalculateShortestError(float target, float current) {
+    float error = target - current;
+    
+    // 核心：将误差限制在 -PI 到 +PI 之间
+    // 如果误差是 350度 (约6.1 rad)，这就变成了 -10度 (-0.17 rad)
+    while (error > 3.1415926f) error -= 6.2831853f;
+    while (error < -3.1415926f) error += 6.2831853f;
+    
+    return error;
+}
+
+static float NormalizeAngle(float angle) {
+    // 使用 fmod 进行快速取模，然后调整范围
+    angle = fmodf(angle, M_TWOPI); 
+    
+    if (angle > M_PI) {
+        angle -= M_TWOPI;
+    } else if (angle < -M_PI) {
+        angle += M_TWOPI;
+    }
+    return angle;
+}
+
 /**
  * @brief 统一控制逻辑
  * @note  无论什么模式，云台始终基于“绝对目标”进行控制。
@@ -253,10 +279,29 @@ static void RunControlMode(void) {
   // 假设限位在 +/- 25度 (约 0.43 rad)
   if (g_target_pitch_rad > 0.43f) g_target_pitch_rad = 0.43f;
   if (g_target_pitch_rad < -0.43f) g_target_pitch_rad = -0.43f;
+  real_motor_target = g_target_pitch_rad + 3.1415926f;
+  real_motor_target = NormalizeAngle(real_motor_target);
 
-  // 参数4 (vel): 设为 1.0f (或其他非零值) 作为运动时的速度限制或前馈
-  // PID 计算完全由电机内部完成，不再需要 MCU 参与
-  pos_speed_ctrl(&hcan2, g_pitch_motor.para.id, g_target_pitch_rad, 1.0f);
+  pitch_fb = g_pitch_motor.para.pos;
+
+  // 2. 计算“最短”误差
+  // 假设目标是 0 (水平)，反馈是 3.14 (背后) -> 误差 = -3.14
+  // 假设目标是 0，反馈是 -3.14 -> 误差 = 3.14
+  // 这样电机就会走最近的路，而不会绕大圈
+  Pid_SetParams(g_pitch_pid, &pitch_pid_params);
+  pitch_error = CalculateShortestError(real_motor_target, pitch_fb);
+  target_speed = Pid_Calc(g_pitch_pid, pitch_error, 0.0f); 
+  // 注意：因为我们传进去的是 error, 所以 feedback 填 0 即可
+  // 或者使用: Pid_CalcAngle(pid, target, current) 如果该函数内部处理了过零
+
+  // 4. 安全限速 (防止 PID 输出过大导致疯车)
+  if (target_speed > 10.0f) target_speed = 10.0f;
+  if (target_speed < -10.0f) target_speed = -10.0f;
+
+  // 5. 发送速度指令 (推荐使用 MIT 模式模拟速度环)
+  // Kp=0 (无位置刚度), Kd=2.0 (速度刚度), Vel=target_speed
+  // 这样既利用了 MIT 的高响应，又执行了我们的速度指令
+  mit_ctrl(&hcan2, g_pitch_motor.para.id, 0.0f, target_speed, 0.0f, 2.0f, 0.0f);
   
   // 4. 准备底盘指令 (云台坐标系下的速度)
   // 左摇杆控制平移

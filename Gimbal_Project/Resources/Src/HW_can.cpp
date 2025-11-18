@@ -83,7 +83,7 @@ void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan) {
  */
 static void CAN_Rx_Decode_Gimbal(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_data) {
   // DM4310 反馈帧 ID = 0x00 + 电机 ID
-  if (rx_header->StdId == g_pitch_motor.para.id) // ID 2
+  if (rx_header->StdId == g_pitch_motor.para.id||rx_header->StdId == (uint32_t)(g_pitch_motor.para.id + 0x10)) // ID 2
   {
       dm4310_fbdata(&g_pitch_motor, rx_data, rx_header->DLC);
   }

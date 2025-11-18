@@ -104,7 +104,7 @@ int main(void) {
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  MainInit();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -162,22 +162,39 @@ void SystemClock_Config(void) {
 }
 
 /* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
+
+/* USER CODE BEGIN EXTERN_CALLBACKS */
+/**
+ * @brief  Period elapsed callback in non blocking mode
+ * @note   This function is called by the HAL when a timer update event occurs.
+ *         We use TIM6 as the main control loop timer (1kHz) and forward the
+ *         callback to the MainTask_Loop defined in Tasks/main_task.
+ */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM6) 
-  {
-    MainTask_Loop(); 
+  if (&htim6 == htim) {
+    /* call the main task loop (runs at timer rate) */
+    MainTask_Loop();
   }
 }
 
 /**
-  * @brief  UART 空闲中断回调 (遥控器)
-  */
+ * @brief UART receive-to-idle / rx-event callback
+ * @param huart UART handle
+ * @param Size number of bytes received
+ *
+ * This forwards the HAL UART Rx event to the C++ task layer which expects
+ * the signature (UART_HandleTypeDef*, uint16_t).
+ */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-    MainTask_UART_Callback(huart, Size);
+  /* forward to task-level handler */
+  MainTask_UART_Callback(huart, Size);
 }
-/* USER CODE END 4 */
+
+/* USER CODE END EXTERN_CALLBACKS */
 
 /**
  * @brief  This function is executed in case of error occurrence.

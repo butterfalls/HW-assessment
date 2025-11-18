@@ -8,7 +8,7 @@
 
 // 以下是DM4310的参数，可以根据电机的实际参数进行调整
 #define P_MIN -3.141593f
-#define P_MAX -3.141593f
+#define P_MAX 3.141593f
 #define V_MIN -21.0f
 #define V_MAX 21.0f
 #define KP_MIN 0.0f
