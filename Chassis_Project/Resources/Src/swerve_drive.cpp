@@ -26,17 +26,17 @@ SwerveDrive::SwerveDrive(float wheelbase_x, float wheelbase_y, float wheel_radiu
 void SwerveDrive::calculate(const float vx, const float vy, const float wz, const float current_angles[4]) {
     // 舵轮底盘逆运动学解算
     // 1. 计算每个轮子在底盘坐标系下的速度矢量
-    // 轮子 0 (FR): {+L, +W}
-    float A_0 = vx - wz * W_;
+    // 轮子 0 (FR): {+L, -W}
+    float A_0 = vx + wz * W_;
     float B_0 = vy + wz * L_;
-    // 轮子 1 (FL): {+L, -W}
-    float A_1 = vx + wz * W_;
+    // 轮子 1 (FL): {+L, +W}
+    float A_1 = vx - wz * W_;
     float B_1 = vy + wz * L_;
-    // 轮子 2 (BL): {-L, -W}
-    float A_2 = vx + wz * W_;
+    // 轮子 2 (BL): {-L, +W}
+    float A_2 = vx - wz * W_;
     float B_2 = vy - wz * L_;
-    // 轮子 3 (BR): {-L, +W}
-    float A_3 = vx - wz * W_;
+    // 轮子 3 (BR): {-L, -W}
+    float A_3 = vx + wz * W_;
     float B_3 = vy - wz * L_;
 
     float A[] = {A_0, A_1, A_2, A_3};

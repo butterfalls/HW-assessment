@@ -35,6 +35,7 @@ void GM6020::decode(uint8_t *data) {
     
     if (total_angle_rad_ == 0.0f && last_angle_rad_ == 0.0f) {
         last_angle_rad_ = current_angle_rad;
+        total_angle_rad_ = current_angle_rad;
     }
 
     float delta_angle = current_angle_rad - last_angle_rad_;

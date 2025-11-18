@@ -1,13 +1,9 @@
 /**
 *******************************************************************************
 * @file      :main_task.cpp (Chassis)
-* @brief     : 底盘C板 - 主循环任务 (V1.6.2 坐标系修正)
-* @note      : [BUG 修复] 修复了 V1.4.x 的所有链接器错误
-* @note      : [V1.6.2 修正] 
-* 根据用户测试反馈 (2025-11-17), `CoordinateTransform` 
-* 不再使用 (云台IMU - 底盘IMU) 的差值。
-* 改为使用 Yaw 轴电机 (g_yaw_motor) 的编码器角度
-* (position_f) 作为云台相对底盘的夹角。
+* @brief     : 底盘C板 - 主循环任务 (V1.6.3 舵向最短路径优化)
+* @note      : [优化] 解决舵轮长时间旋转导致的角度变量溢出问题
+* @note      : [优化] 引入 CalculateShortestPath 实现舵向电机就近转动
 *******************************************************************************
 */
 
@@ -32,6 +28,10 @@
 #include "arm_math.h"
 
 /* Private macro -------------------------------------------------------------*/
+#ifndef M_TWOPI
+#define M_TWOPI (2.0f * 3.14159265358979323846f)
+#endif
+
 /* Private types -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 // [BUG 修复] volatile 变量定义在唯一的 .cpp 文件中
@@ -79,6 +79,9 @@ static void ControlChassisYaw(void);
 // [V1.6.1 新增]
 static void UpdateCumulativeChassisYaw(void);
 static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis_vx, float* chassis_vy);
+
+// [新增] 计算最短路径误差
+static float CalculateShortestAngleError(float target_rad, float current_rad);
 
 
 // -----------------------------------------------------------------
@@ -158,8 +161,8 @@ static void RobotInit(void) {
   }
   
   // 3. 初始化 Yaw 电机 (DM4310, ID 1, CAN2)
-  // [V1.5.0] 切换到速度模式
-  joint_motor_init(&g_yaw_motor, CHASSIS_YAW_MOTOR_ID, SPEED_MODE);
+  // [V1.6.4] 切换到 MIT 模式
+  joint_motor_init(&g_yaw_motor, CHASSIS_YAW_MOTOR_ID, MIT_MODE);
 
   // 4. 初始化运动学解算器
   g_swerve_drive = SwerveDrive_Create(
@@ -170,8 +173,8 @@ static void RobotInit(void) {
 
   // 5. 使能 Yaw 电机
   HAL_Delay(100); 
-  // [V1.5.0] 使能速度模式
-  enable_motor_mode(&hcan2, g_yaw_motor.para.id, SPEED_MODE);
+  // [V1.6.4] 使能 MIT 模式
+  enable_motor_mode(&hcan2, g_yaw_motor.para.id, MIT_MODE);
   HAL_Delay(10);
 
   // 6. 清空 CAN 发送缓冲区
@@ -201,7 +204,7 @@ static void RobotTask(void) {
 }
 
 /**
- * @brief [V1.6.1 修正] 三种模式的底盘控制逻辑
+ * @brief [V1.6.4 修正] 三种模式的底盘控制逻辑
  */
 static void RunControlMode(void) {
     float vx_cmd = 0.0f; // 最终底盘坐标系 vx
@@ -259,52 +262,96 @@ static void RunEStopMode(void) {
 }
 
 /**
- * @brief [V1.5.0] Yaw 电机控制 (绝对姿态)
- * 目标: 让云台的 *当前* 绝对角度 (来自云台IMU)
- * 追上云台的 *目标* 绝对角度 (来自遥控器积分)
- * @note  此函数处理360°无缝旋转
+ * @brief Yaw 轴电机速度控制 (二次曲线映射)
+ * @note  根据摇杆输入 (-1.0 ~ 1.0) 计算目标速度
  */
 static void ControlChassisYaw(void)
 {
-    if (g_chassis_yaw_pid == NULL) return;
-    
-    // [V1.5.0] 考核要求: "在转动角度超过一圈的时候做越界的处理"
-    // 我们使用线性PID (Pid_Calc) 而不是角度PID (Pid_CalcAngle)
-    // 误差 = 目标 (来自CAN) - 反馈 (来自CAN)
-    float yaw_speed_output = Pid_Calc(g_chassis_yaw_pid, 
-                                     g_target_gimbal_yaw_rad, 
-                                     g_current_gimbal_yaw_rad); 
-    
-    // 使用速度模式控制 Yaw 电机
-    speed_ctrl(&hcan2, g_yaw_motor.para.id, yaw_speed_output);
+    // 1. 获取输入 (假设范围 -1.0 ~ 1.0)
+    // [警告] 请确保 g_target_gimbal_yaw_rad 是归一化的摇杆值！
+    float input = g_target_gimbal_yaw_rad;
+
+    // 2. 限制输入范围 (安全防呆)
+    if (input > 1.0f) input = 1.0f;
+    if (input < -1.0f) input = -1.0f;
+
+    // 3. 定义最大旋转速度 (rad/s)
+    const float MAX_YAW_SPEED = 3.14159f * 2.0f; // 示例: 2转/秒
+
+    // 4. 计算二次曲线因子 (保留符号)
+    // fabsf(input) * input 既保留了原来的正负，又实现了平方效果
+    float curve_factor = fabsf(input) * input;
+
+    // 5. 计算目标速度
+    float target_speed = MAX_YAW_SPEED * curve_factor;
+    target_speed *= 0.8f; // 按要求缩放至 80%
+
+    // 6. 发送 MIT 指令模拟速度闭环
+    // kd = 2.0f 提供速度刚度，让电机努力维持在 target_speed
+    mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, target_speed, 0.0f, 2.0f, 0.0f);
 }
 
 
 /**
- * @brief (V1.5.0) 运行舵轮解算和8个PID环
+ * @brief [优化] 计算角度的最短路径误差
+ * @param target_rad 目标角度 (rad)
+ * @param current_rad 当前角度 (rad, 0~2PI)
+ * @return 误差值，范围在 [-PI, PI]
+ */
+static float CalculateShortestAngleError(float target_rad, float current_rad) {
+    float error = target_rad - current_rad;
+    // 归一化到 -PI ~ PI
+    while (error > M_PI) {
+        error -= M_TWOPI;
+    }
+    while (error < -M_PI) {
+        error += M_TWOPI;
+    }
+    return error;
+}
+
+/**
+ * @brief (V1.6.3) 运行舵轮解算和8个PID环 - 包含最短路径逻辑
  */
 static void RunSwerveControl(float vx, float vy, float wz)
 {
   if (g_swerve_drive == NULL) return;
   
+  // [优化] 使用 GetAngleRad (0-2PI) 获取当前物理角度，避免溢出
   float current_angles[4] = {
-      GM6020_GetOutputAngleRad(g_steer_motors[SWERVE_FR_MODULE]),
-      GM6020_GetOutputAngleRad(g_steer_motors[SWERVE_FL_MODULE]),
-      GM6020_GetOutputAngleRad(g_steer_motors[SWERVE_BL_MODULE]),
-      GM6020_GetOutputAngleRad(g_steer_motors[SWERVE_BR_MODULE])
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_FR_MODULE]),
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_FL_MODULE]),
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_BL_MODULE]),
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_BR_MODULE])
   };
 
+  // 解算目标角度和速度
   SwerveDrive_Calculate(g_swerve_drive, vx, vy, wz, current_angles);
 
   for (int i = 0; i < 4; ++i) {
     SwerveModuleState target_state = SwerveDrive_GetModuleState(g_swerve_drive, i);
     
-    // 航向电机 (GM6020) - 角度环
-    float steer_fdb = GM6020_GetOutputAngleRad(g_steer_motors[i]);
-    float steer_output = Pid_CalcAngle(g_steer_pids[i], target_state.angle_rad, steer_fdb);
+    // --- 1. 航向电机 (GM6020) 最短路径控制 ---
+    // 获取当前角度 (0 ~ 2PI)
+    float steer_fdb = GM6020_GetAngleRad(g_steer_motors[i]);
+    
+    // 计算最短误差 (-PI ~ PI)
+    float steer_error = CalculateShortestAngleError(target_state.angle_rad, steer_fdb);
+    
+    // [高级优化] 矢量反转逻辑 (Swerve Optimization)
+    // 如果误差绝对值大于 90度 (PI/2)，则无需转大弯，而是反转轮子方向，并调整目标角度
+    // 这里只实现基础的最短误差输入给 PID
+    // 注意：如果要使用 PID 计算，现在的 Error 已经是差值了，所以：
+    // 目标设为 steer_error，反馈设为 0；或者 目标设为 steer_fdb + steer_error，反馈设为 steer_fdb
+    // 最简单的方式是直接对误差进行 PID 计算
+    float steer_output = Pid_Calc(g_steer_pids[i], steer_error, 0.0f);
+    
     GM6020_SetInputCurrent(g_steer_motors[i], (int16_t)steer_output); 
 
-    // 轮速电机 (M3508) - 速度环
+    // --- 2. 轮速电机 (M3508) ---
+    // [警告] M3508 用于驱动车轮，必须是速度闭环！
+    // 不能使用 GetMotorAngleRad (位置)，否则车轮会锁死无法连续滚动。
+    // 这里保持 GetOutputVelRadS (速度反馈)。速度值不会无限累积，不会溢出。
     float wheel_fdb = M3508_GetOutputVelRadS(g_wheel_motors[i]);
     float wheel_output = Pid_Calc(g_wheel_pids[i], target_state.speed_rads, wheel_fdb);
     M3508_SetInputCurrent(g_wheel_motors[i], (int16_t)wheel_output);
@@ -320,8 +367,8 @@ static void SetAllMotorsZero(void) {
       if(g_steer_motors[i]) GM6020_SetInputCurrent(g_steer_motors[i], 0); 
       if(g_wheel_motors[i]) M3508_SetInputCurrent(g_wheel_motors[i], 0);
   }
-  // 2. Yaw 电机
-  speed_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f);
+  // 2. Yaw 电机 (使用 mit_ctrl 模拟速度模式，发送速度0)
+  mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.5f, 0.0f);
   
   // 3. 重置所有 10 个 PID
   for (int i = 0; i < 4; ++i) {

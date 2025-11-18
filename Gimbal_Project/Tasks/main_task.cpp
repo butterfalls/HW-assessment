@@ -254,14 +254,10 @@ static void RunControlMode(void) {
   if (g_target_pitch_rad > 0.43f) g_target_pitch_rad = 0.43f;
   if (g_target_pitch_rad < -0.43f) g_target_pitch_rad = -0.43f;
 
-  // 3. Pitch 轴闭环控制 (位置环)
-  // 反馈源：云台 IMU Pitch
-  float fdb_pitch = imu_datas.euler_vals[PITCH];
-  float t_ff_pitch = Pid_CalcAngle(g_pitch_pid, g_target_pitch_rad, fdb_pitch);
+  // 参数4 (vel): 设为 1.0f (或其他非零值) 作为运动时的速度限制或前馈
+  // PID 计算完全由电机内部完成，不再需要 MCU 参与
+  pos_speed_ctrl(&hcan2, g_pitch_motor.para.id, g_target_pitch_rad, 1.0f);
   
-  // 发送给 Pitch 电机
-  mit_ctrl(&hcan2, g_pitch_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, t_ff_pitch);
-
   // 4. 准备底盘指令 (云台坐标系下的速度)
   // 左摇杆控制平移
   g_chassis_cmd.vx = rc_ptr->rc_lv() * RC_MAX_SPEED_X;

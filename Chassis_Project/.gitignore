@@ -6,3 +6,5 @@
 !.gitignore
 !CMakeLists.txt
 !README.md
+!/Core
+/Core/Inc

@@ -5,4 +5,5 @@
 !*.ioc
 !.gitignore
 !CMakeLists.txt
-!/Core/Src/main.c
+!/Core
+/Core/Inc

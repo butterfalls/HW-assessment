@@ -47,6 +47,21 @@ extern void disable_motor_mode(CAN_HandleTypeDef *hcan, uint16_t motor_id,
                                uint16_t mode_id);
 
 // 关节电机
+/**
+************************************************************************
+* @brief:      	mit_ctrl: MIT模式下的电机控制函数
+* @param        hcan:
+*指向CAN_HandleTypeDef结构的指针，用于指定CAN总线
+* @param        motor_id:	电机ID，指定目标电机
+* @param        pos:			位置给定值
+* @param        vel:			速度给定值
+* @param        kp:				位置比例系数
+* @param        kd:				位置微分系数
+* @param        torq:			转矩给定值
+* @retval:     	void
+* @details:    	通过CAN总线向电机发送MIT模式下的控制帧。
+************************************************************************
+**/
 extern void mit_ctrl(CAN_HandleTypeDef *hcan, uint16_t motor_id, float pos,
                      float vel, float kp, float kd, float torq);
 extern void pos_speed_ctrl(CAN_HandleTypeDef *hcan, uint16_t motor_id,
