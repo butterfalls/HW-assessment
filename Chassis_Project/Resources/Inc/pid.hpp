@@ -19,8 +19,15 @@ typedef struct {
     float Kp;
     float Ki;
     float Kd;
-    float max_out;      // 最大输出限制
-    float max_integral; // 积分限幅
+    
+    float max_out;          // 最大输出限幅
+    float max_integral;     // 积分限幅
+    
+    float deadband;         // 误差死区
+    float integral_range;   // 积分分离阈值
+    
+    float d_filter_gain;    // 微分滤波系数 [0..1]
+    float dt;               // 控制周期 (秒)
 } PidParams;
 
 // -----------------------------------------------------------------
@@ -36,7 +43,8 @@ struct PidData {
     float error;
     float last_error;
     float integral;
-    float derivative;
+    float derivative;   // 滤波后的微分
+    float last_fdb;     // 上一次反馈 (Derivative on Measurement)
     float output;
 };
 
@@ -49,7 +57,7 @@ class Pid {
     ~Pid() = default;
 
     void setParams(PidParams &params);
-    void setDt(float dt); // 设置采样时间 (秒)
+    void setDt(float dt); // 设置采样时间 (秒) -> 写入 params_.dt
     PidParams getParams(void);
     
     /**
@@ -68,7 +76,6 @@ class Pid {
    private:
     PidParams params_;
     PidData data_;
-    float dt_; // 采样时间 (秒)，默认 0.001f
     float clamp(float value, float min, float max);
 };
 
@@ -88,7 +95,6 @@ float Pid_Calc(PidHandle handle, float ref, float fdb);
 float Pid_CalcAngle(PidHandle handle, float ref, float fdb);
 void Pid_Reset(PidHandle handle);
 void Pid_SetParams(PidHandle handle, PidParams *params);
-void Pid_SetDt(PidHandle handle, float dt);
 
 
 #ifdef __cplusplus

@@ -35,16 +35,36 @@ extern "C" {
 #define PITCH 1
 #define YAW 2
 
-// PID 参数 (KP, KI, KD, MaxOut, MaxIntegral)
-// **注意**: 必须在机器人上进行实际整定!
+// PID 参数 (Kp, Ki, Kd, max_out, max_integral, deadband, integral_range, d_filter_gain, dt)
+// **注意**: 必须在机器人上进行实际整定! 新增参数默认值给出合理起点，可按需要微调。
 // 1. 航向电机 (GM6020) - 角度环 (电流模式)
-#define PID_STEER_PARAMS {100.0f, 0.7f, 0.0f, 16384.0f, 4000.0f} 
+#define PID_STEER_PARAMS { \
+    25.0f, 10.0f, 1.0f, /* Kp Ki Kd */ \
+    16384.0f, 4000.0f,  /* max_out, max_integral */ \
+    0.01f, 0.5f,          /* 死区 0.5度, 积分范围 30度 */ \
+    0.15f, 0.001f        /* d_filter_gain, dt(s) */ \
+}
 // 2. 轮速电机 (M3508) - 速度环 (rad/s)
-#define PID_WHEEL_PARAMS {0.0f, 0.0f, 0.0f, 16384.0f, 8000.0f}
+#define PID_WHEEL_PARAMS { \
+    0.0f, 0.0f, 0.0f,   /* Kp Ki Kd (示例为0，请按实机整定) */ \
+    16384.0f, 8000.0f,  /* max_out, max_integral */ \
+    0.1f, 3.0f,           /* 速度死区, 积分范围 */ \
+    1.0f, 0.001f       /* d_filter_gain, dt(s) */ \
+}
 // 3. 底盘跟随PID (输出 wz, rad/s)
-#define PID_FOLLOW_PARAMS {5.0f, 0.0f, 0.1f, M_PI * 2.0f, 1.0f}
+#define PID_FOLLOW_PARAMS { \
+    5.0f, 0.0f, 0.1f,   /* Kp Ki Kd */ \
+    (M_PI * 2.0f), 1.0f,/* max_out, max_integral */ \
+    0.02f, 0.5f,        /* deadband(rad), integral_range(rad) */ \
+    0.2f, 0.001f        /* d_filter_gain, dt(s) */ \
+}
 // 4. 云台Yaw电机PID (输出 rad/s)
-#define PID_CHASSIS_YAW_PARAMS {5.0f, 0.1f, 0.0f, 18.0f, 5.0f} // MaxOut (21 rad/s = DM4310 V_MAX)
+#define PID_CHASSIS_YAW_PARAMS { \
+    10.0f, 5.0f, 0.5f,   /* Kp Ki Kd */ \
+    18.0f, 5.0f,        /* max_out, max_integral */ \
+    0.005f, 0.3f,        /* deadband(rad), integral_range(rad) */ \
+    0.1f, 0.001f        /* d_filter_gain, dt(s) */ \
+} // MaxOut (约 18 rad/s)
 
 // ------------------- 考核说明中的机器人几何参数 (舵轮组) --------------------
 #define SWERVE_WHEELBASE_X (0.384f)
