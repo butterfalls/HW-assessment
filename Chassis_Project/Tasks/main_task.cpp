@@ -74,6 +74,7 @@ static uint8_t g_gm6020_tx_buf[8] = {0}; // 0x1FE (CAN1, 电流模式)
 // 记录每个舵轮的目标角度和当前反馈角度 (rad)
 volatile float g_debug_steer_target_angle[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 volatile float g_debug_steer_fdb[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+volatile float g_debug_steer_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 // -----------------------------
 
 float vx_cmd = 0.0f; // 最终底盘坐标系 vx
@@ -282,26 +283,11 @@ static void RunEStopMode(void) {
  */
 static void ControlChassisYaw(void)
 {
-    // // 1. 获取输入 (假设范围 -1.0 ~ 1.0)
-    // // [警告] 请确保 g_target_gimbal_yaw_rad 是归一化的摇杆值！
-    // input = g_target_gimbal_yaw_rad;
-    // // 2. 限制输入范围 (安全防呆)
-    // if (input > 1.0f) input = 1.0f;
-    // if (input < -1.0f) input = -1.0f;
-    // // 3. 定义最大旋转速度 (rad/s)
-    // const float MAX_YAW_SPEED = 3.14159f * 2.0f; // 示例: 2转/秒
-    // // 4. 计算二次曲线因子 (保留符号)
-    // // fabsf(input) * input 既保留了原来的正负，又实现了平方效果
-    // float curve_factor = fabsf(input) * input;
-    // // 5. 计算目标速度
-    // target_speed = MAX_YAW_SPEED * curve_factor;
-    // target_speed *= 0.8f; // 按要求缩放至 80%
-
-    float target_yaw = g_target_gimbal_yaw_rad;
-    float current_yaw = g_current_gimbal_yaw_rad;
-    float yaw_error = CalculateShortestAngleError(target_yaw, current_yaw);
-    Pid_SetParams(g_chassis_yaw_pid,&yaw_pid_params);
-    target_speed_ref = Pid_Calc(g_chassis_yaw_pid, yaw_error, 0.0f);
+  float target_yaw = g_target_gimbal_yaw_rad;
+  float current_yaw = g_current_gimbal_yaw_rad;
+  // 使用角度 PID：自动处理环绕、微分先行与滤波
+  Pid_SetParams(g_chassis_yaw_pid, &yaw_pid_params);
+  target_speed_ref = Pid_CalcAngle(g_chassis_yaw_pid, target_yaw, current_yaw);
     const float MAX_YAW_SPEED = 20.0f;
     if (target_speed_ref > MAX_YAW_SPEED) target_speed_ref = MAX_YAW_SPEED;
     if (target_speed_ref < -MAX_YAW_SPEED) target_speed_ref = -MAX_YAW_SPEED;
@@ -348,24 +334,14 @@ static void RunSwerveControl(float vx, float vy, float wz)
   for (int i = 0; i < 4; ++i) {
     SwerveModuleState target_state = SwerveDrive_GetModuleState(g_swerve_drive, i);
     
-    // --- 1. 航向电机 (GM6020) 最短路径控制 ---
-    // 获取当前角度 (0 ~ 2PI)
-    float steer_fdb = GM6020_GetAngleRad(g_steer_motors[i]);
-    // 保存调试值：目标角度和反馈角度（可在调试器或外部读取）
-    g_debug_steer_target_angle[i] = target_state.angle_rad + PI;
-    g_debug_steer_fdb[i] = steer_fdb;
-      
-    // 计算最短误差 (-PI ~ PI)
-    float steer_error = CalculateShortestAngleError(target_state.angle_rad, steer_fdb);
-    
-    // [高级优化] 矢量反转逻辑 (Swerve Optimization)
-    // 如果误差绝对值大于 90度 (PI/2)，则无需转大弯，而是反转轮子方向，并调整目标角度
-    // 这里只实现基础的最短误差输入给 PID
-    // 注意：如果要使用 PID 计算，现在的 Error 已经是差值了，所以：
-    // 目标设为 steer_error，反馈设为 0；或者 目标设为 steer_fdb + steer_error，反馈设为 steer_fdb
-    // 最简单的方式是直接对误差进行 PID 计算
-    Pid_SetParams(g_steer_pids[i],&steer_pid_params);
-    float steer_output = Pid_Calc(g_steer_pids[i], steer_error, 0.0f);
+  // --- 1. 航向电机 (GM6020) 角度控制 ---
+  float steer_fdb = GM6020_GetAngleRad(g_steer_motors[i]);
+  g_debug_steer_target_angle[i] = target_state.angle_rad+PI;
+  g_debug_steer_fdb[i] = steer_fdb;
+  // 直接使用角度 PID，内部处理 -PI~PI 最短路径与微分先行
+  Pid_SetParams(g_steer_pids[i], &steer_pid_params);
+  float steer_output = Pid_CalcAngle(g_steer_pids[i], target_state.angle_rad+PI, steer_fdb);
+  g_debug_steer_output[i] = steer_output;
     
     GM6020_SetInputCurrent(g_steer_motors[i], (int16_t)steer_output); 
 

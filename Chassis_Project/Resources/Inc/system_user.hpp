@@ -63,7 +63,7 @@ extern "C" {
     10.0f, 5.0f, 0.5f,   /* Kp Ki Kd */ \
     18.0f, 5.0f,        /* max_out, max_integral */ \
     0.005f, 0.3f,        /* deadband(rad), integral_range(rad) */ \
-    0.1f, 0.001f        /* d_filter_gain, dt(s) */ \
+    1.0f, 0.001f        /* d_filter_gain, dt(s) */ \
 } // MaxOut (约 18 rad/s)
 
 // ------------------- 考核说明中的机器人几何参数 (舵轮组) --------------------

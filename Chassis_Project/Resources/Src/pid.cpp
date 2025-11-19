@@ -62,7 +62,7 @@ float Pid::pidCalc(const float ref, const float fdb) {
         data_.integral = clamp(data_.integral, -params_.max_integral, params_.max_integral);
     } else {
         // 误差过大时，不仅不积，有些策略甚至会清空积分，或者保持不变
-        // data_.integral = 0.0f; // 视情况打开
+        data_.integral = 0.0f; // 视情况打开
     }
 
     // 3) 微分先行 + 低通滤波
