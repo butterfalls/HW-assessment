@@ -348,6 +348,15 @@ static void RunSwerveControl(float vx, float vy, float wz)
   // 将计算出的目标角度导出为全局变量，便于外部监测
   g_computed_steer_angle[i] = target_state.angle_rad + PI;
 
+  /*
+   * 为了把“分解后的方向值”作为电机的目标值暴露给调试/观察逻辑，
+   * 这里将计算出的角度写入对应 GM6020 对象的 input 字段。注意：
+   * GM6020_SetInput 在原项目中用于写入电机的输入量（通常是电流），
+   * 但此处发送功能被禁用，我们把它作为承载目标角度的便捷字段。
+   */
+  /* 主任务现在只负责计算和导出目标角度，不直接写入电机输入。
+     电机控制（角度->电流->CAN发送）由 main.c 的 Control_CAN_Tx 负责。 */
+
     // --- 2. 轮速电机 (M3508) ---
     // [警告] M3508 用于驱动车轮，必须是速度闭环！
     // 不能使用 GetMotorAngleRad (位置)，否则车轮会锁死无法连续滚动。

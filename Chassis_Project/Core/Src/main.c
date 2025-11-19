@@ -31,6 +31,7 @@
 #include "pid.hpp"       // 包含 C 兼容头文件
 #include "gm6020.hpp"    // 包含 C 兼容头文件
 #include "main_task.hpp" // declare MainTask_Loop()
+#include "system_user.hpp" // PID macros, vehicle geometry
 #include <math.h>
 /* USER CODE END Includes */
 
@@ -63,6 +64,8 @@ void Control_CAN_Tx(void);
 void Control_Loop(void);
 void run_position_control_loop(void);
 float clamp_current(float current);
+// 从 C++ 模块读取计算出的目标角度 (rad)
+extern volatile float g_computed_steer_angle[4];
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -200,16 +203,22 @@ static uint32_t g_tx_mailbox_1fe;
 
 // --- PID 参数 (C 结构体) ---
 static PidParams g_position_pid_params = {
-  .Kp = 800.0f,
-  .Ki = 7.0f,
-  .Kd = 20000.0f,
+  .Kp = 2200.0f,
+  .Ki = 2.0f,
+  .Kd = 200.0f,
   .max_out = 16384.0f,
-  .max_integral = 4000.0f,
-  .deadband = 0.0f,
-  .integral_range = 0.0f,
-  .d_filter_gain = 0.0f,
+  .max_integral = 5000.0f,
+  .deadband = 0.01f,
+  .integral_range = 0.5f,
+  .d_filter_gain = 0.15f,
   .dt = 0.001f
 };
+
+/* 舵向 PID: 为 4 个舵轮创建独立的 PID 实例，使用 g_position_pid_params 作为参数 */
+static PidHandle g_steer_pids_c[4] = {0, 0, 0, 0};
+
+/* 暴露给调试器的舵向 PID 输出 (控制电流)，每个轮一个值 (rad->current) */
+volatile float g_steer_output_c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 /* Control functions (copied/adapted) */
 void Control_Init(void)
@@ -222,6 +231,11 @@ void Control_Init(void)
 
   // 2. 根据任务创建PID控制器 (默认位置任务)
   g_pid_controller_1 = Pid_Create(&g_position_pid_params);
+
+  // 额外：为舵向电机创建 4 个 PID（使用 g_position_pid_params）
+  for (i = 0; i < 4; i++) {
+    g_steer_pids_c[i] = Pid_Create(&g_position_pid_params);
+  }
 
   // 3. 配置CAN过滤器
   CAN_FilterTypeDef filter_config;
@@ -291,7 +305,7 @@ void Control_Loop(void)
 {
   // 默认运行位置控制任务
   Pid_SetParams(g_pid_controller_1, &g_position_pid_params);
-  run_position_control_loop();
+  // run_position_control_loop();
 }
 
 float clamp_current(float current) {
@@ -314,6 +328,20 @@ void Control_CAN_Tx(void)
   g_tx_header_1fe.TransmitGlobalTime = DISABLE;
 
   for (i = 0; i < 4; i++) {
+    /* 1) 从 C++ 模块读取分解出的目标角度 (rad) */
+    float target_angle = g_computed_steer_angle[i];
+    /* 2) 读取当前物理角度 (rad) */
+    float current_angle = GM6020_GetAngleRad(g_motors[i]);
+    /* 3) 运行角度 PID，输出控制量（电流） */
+    if (g_steer_pids_c[i]) {
+      Pid_SetParams(g_steer_pids_c[i], &g_position_pid_params);
+    float steer_output = Pid_CalcAngle(g_steer_pids_c[i], target_angle, current_angle);
+    /* 保存到全局可观察变量，便于调试 */
+    g_steer_output_c[i] = current_angle;
+    /* 把 PID 输出写回 motor input，后续打包发送 */
+    GM6020_SetInput(g_motors[i], steer_output);
+    }
+    /* 4) 打包为 int16 并写入 CAN 缓冲区 */
     int16_t voltage = (int16_t)clamp_current(GM6020_GetInput(g_motors[i]));
     g_can_tx_msg_1ff[i * 2] = (voltage >> 8) & 0xFF;
     g_can_tx_msg_1ff[i * 2 + 1] = (voltage & 0xFF);
