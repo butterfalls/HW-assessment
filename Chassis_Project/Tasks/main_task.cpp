@@ -92,7 +92,7 @@ volatile float g_yaw_bias = 0.0f;
  * 之前硬编码对 vy 取反，现在改为参数化，默认保持之前行为：vx 不反，vy 反
  */
 volatile float g_vx_sign = -1.0f; // 用户反馈 X 方向反了 -> 默认取反
-volatile float g_vy_sign = -1.0f; // 保持之前对 Y 的反转
+volatile float g_vy_sign = 1.0f; // 保持之前对 Y 的反转
 
 /* 每个舵轮的角度偏移修正 (rad)，用于将检测零点对齐到机械零点 */
 static const float g_steer_angle_offsets_cpp[4] = {
@@ -233,12 +233,16 @@ static void RobotInit(void) {
   // 6. 清空 CAN 发送缓冲区
   memset(g_m3508_tx_buf, 0, sizeof(g_m3508_tx_buf));
   memset(g_gm6020_tx_buf, 0, sizeof(g_gm6020_tx_buf));
+
+  // [临时校准] 云台->底盘坐标转换存在约 100 度偏差：在此设置偏置，等同于“减去100度”
+  // 如需微调，可在调试器中修改 g_yaw_bias，或调用 GimbalYaw_SetBiasDeg()
+  g_yaw_bias = (-100.0f * (M_PI / 180.0f));
 }
 
 
 static void RobotTask(void) {
   // [V1.5.0] 无论什么模式, Yaw 轴电机都必须独立运行
-  //ControlChassisYaw();
+  ControlChassisYaw();
 
   // 根据从云台 CAN 接收到的模式, 执行底盘逻辑
   switch (g_control_mode) {
