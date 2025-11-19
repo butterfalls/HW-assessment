@@ -54,7 +54,12 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+static PidHandle g_wheel_pids_c[4] = {0,0,0,0};
+static PidParams g_wheel_pid_params = PID_WHEEL_PARAMS; // 使用宏定义参数
+volatile float g_wheel_output_c[4] = {0.0f,0.0f,0.0f,0.0f}; // PID 计算出的电流（未裁剪前的浮点）
+static uint8_t g_can2_tx_200_buf[8] = {0};
+static uint32_t g_can2_tx_mailbox_200;
+static int g_wheel_pid_inited = 0; // 惰性初始化标记
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -186,6 +191,26 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       Control_Loop();
       Control_CAN_Tx();
     }
+    else{
+      CAN_TxHeaderTypeDef tx_header_200;
+      tx_header_200.StdId = 0x200;
+      tx_header_200.IDE = CAN_ID_STD;
+      tx_header_200.RTR = CAN_RTR_DATA;
+      tx_header_200.DLC = 8;
+      tx_header_200.TransmitGlobalTime = DISABLE;
+
+      int16_t c1 = 0;
+      int16_t c2 = 0;
+      int16_t c3 = 0;
+      int16_t c4 = 0;
+
+      g_can2_tx_200_buf[0] = (c1 >> 8) & 0xFF; g_can2_tx_200_buf[1] = c1 & 0xFF;
+      g_can2_tx_200_buf[2] = (c2 >> 8) & 0xFF; g_can2_tx_200_buf[3] = c2 & 0xFF;
+      g_can2_tx_200_buf[4] = (c3 >> 8) & 0xFF; g_can2_tx_200_buf[5] = c3 & 0xFF;
+      g_can2_tx_200_buf[6] = (c4 >> 8) & 0xFF; g_can2_tx_200_buf[7] = c4 & 0xFF;
+
+      HAL_CAN_AddTxMessage(&hcan2, &tx_header_200, g_can2_tx_200_buf, &g_can2_tx_mailbox_200);
+    }
   }
 }
 
@@ -233,12 +258,7 @@ static PidHandle g_steer_pids_c[4] = {0, 0, 0, 0};
 volatile float g_steer_output_c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 /* 四轮速度闭环 PID 句柄与输出（分离模式：在 main.c 做 PID + 发送） */
-static PidHandle g_wheel_pids_c[4] = {0,0,0,0};
-static PidParams g_wheel_pid_params = PID_WHEEL_PARAMS; // 使用宏定义参数
-volatile float g_wheel_output_c[4] = {0.0f,0.0f,0.0f,0.0f}; // PID 计算出的电流（未裁剪前的浮点）
-static uint8_t g_can2_tx_200_buf[8] = {0};
-static uint32_t g_can2_tx_mailbox_200;
-static int g_wheel_pid_inited = 0; // 惰性初始化标记
+
 
 static void Wheel_CAN_Tx(void); // 前置声明
 
@@ -346,13 +366,13 @@ void Control_Loop(void)
   if (g_wheel_pid_inited) {
     for (int i = 0; i < 4; ++i) {
       float target_speed = g_computed_wheel_speed[i];
-      float fdb_speed = M3508_GetOutputVelRadS(g_wheel_motors[i]); // 或使用 g_m3508_feedback[i]
+      float fdb_speed = g_m3508_feedback[i]; // 或使用 g_m3508_feedback[i]
       Pid_SetParams(g_wheel_pids_c[i], &g_wheel_pid_params);
-      float output_current = Pid_Calc(g_wheel_pids_c[i], target_speed, -fdb_speed);
+      float output_current = Pid_Calc(g_wheel_pids_c[i], target_speed, fdb_speed);
       /* 限幅并保存 */
       if (output_current > 16384.0f) output_current = 16384.0f;
       if (output_current < -16384.0f) output_current = -16384.0f;
-      g_wheel_output_c[i] = output_current;
+      g_wheel_output_c[i] = -output_current;
     }
   }
 }
@@ -418,10 +438,10 @@ static void Wheel_CAN_Tx(void)
   tx_header_200.TransmitGlobalTime = DISABLE;
 
   /* ID 顺序: 1(F L) 2(B L) 3(B R) 4(F R) */
-  int16_t c1 = (int16_t)g_wheel_output_c[SWERVE_FL_MODULE];
-  int16_t c2 = (int16_t)g_wheel_output_c[SWERVE_BL_MODULE];
-  int16_t c3 = (int16_t)g_wheel_output_c[SWERVE_BR_MODULE];
-  int16_t c4 = (int16_t)g_wheel_output_c[SWERVE_FR_MODULE];
+  int16_t c2 = (int16_t)g_wheel_output_c[SWERVE_FL_MODULE];
+  int16_t c3 = (int16_t)g_wheel_output_c[SWERVE_BL_MODULE];
+  int16_t c4 = (int16_t)g_wheel_output_c[SWERVE_BR_MODULE];
+  int16_t c1 = (int16_t)g_wheel_output_c[SWERVE_FR_MODULE];
   // int16_t c1 = 600;
   // int16_t c2 = 300;
   // int16_t c3 = 600;

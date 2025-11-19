@@ -86,6 +86,14 @@ volatile float g_computed_steer_angle[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 volatile float g_yaw_sign = -1.0f;
 volatile float g_yaw_bias = 0.0f;
 
+/* RC 摇杆方向可调符号（云台坐标系）
+ * g_vx_sign: +1 保持原方向，-1 取反 X (前后或左右，视定义)
+ * g_vy_sign: +1 保持原方向，-1 取反 Y
+ * 之前硬编码对 vy 取反，现在改为参数化，默认保持之前行为：vx 不反，vy 反
+ */
+volatile float g_vx_sign = -1.0f; // 用户反馈 X 方向反了 -> 默认取反
+volatile float g_vy_sign = -1.0f; // 保持之前对 Y 的反转
+
 /* 每个舵轮的角度偏移修正 (rad)，用于将检测零点对齐到机械零点 */
 static const float g_steer_angle_offsets_cpp[4] = {
   0.52f,  /* motor 0 +0.52 */
@@ -230,7 +238,7 @@ static void RobotInit(void) {
 
 static void RobotTask(void) {
   // [V1.5.0] 无论什么模式, Yaw 轴电机都必须独立运行
-  ControlChassisYaw();
+  //ControlChassisYaw();
 
   // 根据从云台 CAN 接收到的模式, 执行底盘逻辑
   switch (g_control_mode) {
@@ -399,7 +407,7 @@ static void RunSwerveControl(float vx, float vy, float wz)
     // 这里保持 GetOutputVelRadS (速度反馈)。速度值不会无限累积，不会溢出。
   float wheel_fdb = M3508_GetOutputVelRadS(g_wheel_motors[i]);
   /* 保存反馈值与解算出的目标速度；不在此处做 PID 与电流下发 */
-  g_m3508_feedback[i] = wheel_fdb;
+  g_m3508_feedback[i] = -wheel_fdb;
   g_m3508_target[i] = target_state.speed_rads; // 保留原先变量名
   g_computed_wheel_speed[i] = target_state.speed_rads; // 供 main.c 使用
   }
@@ -511,16 +519,13 @@ static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis
   // Apply user-configurable sign and bias so we can invert the yaw
   // direction and add a constant offset for tuning.
   float delta_yaw_rad = g_yaw_sign * g_yaw_motor.para.pos + g_yaw_bias;
-    
-  // 修正: 用户反馈摇杆在 Y 方向上回传值与期望相反，
-  // 在解算阶段将云台系的 vy 取反，以使前后方向与摇杆一致。
-  float adj_gimbal_vy = -gimbal_vy;
+  // 参数化方向修正：使用可调符号
+  float adj_gimbal_vx = g_vx_sign * gimbal_vx;
+  float adj_gimbal_vy = g_vy_sign * gimbal_vy;
 
-  // 2. 旋转矩阵
   float cos_delta = arm_cos_f32(delta_yaw_rad);
   float sin_delta = arm_sin_f32(delta_yaw_rad);
 
-  // 3. (Gimbal Frame -> Chassis Frame)
-  *chassis_vx = gimbal_vx * cos_delta - adj_gimbal_vy * sin_delta;
-  *chassis_vy = gimbal_vx * sin_delta + adj_gimbal_vy * cos_delta;
+  *chassis_vx = adj_gimbal_vx * cos_delta - adj_gimbal_vy * sin_delta;
+  *chassis_vy = adj_gimbal_vx * sin_delta + adj_gimbal_vy * cos_delta;
 }

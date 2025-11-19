@@ -46,8 +46,8 @@ extern "C" {
 }
 // 2. 轮速电机 (M3508) - 速度环 (rad/s)
 #define PID_WHEEL_PARAMS { \
-    25.0f, 8.0f, 1.0f,   /* Kp Ki Kd (示例为0，请按实机整定) */ \
-    16384.0f, 8000.0f,  /* max_out, max_integral */ \
+    30.0f, 10.0f, 4.0f,   /* Kp Ki Kd (示例为0，请按实机整定) */ \
+    950.0f, 400.0f,  /* max_out, max_integral */ \
     0.1f, 20.0f,           /* 速度死区, 积分范围 */ \
     1.0f, 0.001f       /* d_filter_gain, dt(s) */ \
 }
