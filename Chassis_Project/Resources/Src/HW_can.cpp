@@ -68,14 +68,23 @@ void CanFilter_Init(CAN_HandleTypeDef *hcan) {
  * @brief   CAN1 FIFO0 中断回调 (板间通信 + 舵电机)
  * @note    [V1.5.0] 拓扑图: CAN1 = (上下通信) + (GM6020)
  */
+extern GM6020Handle g_motors[];
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
   if (hcan == &hcan1) {
+      CAN_RxHeaderTypeDef rx_header;
+      uint8_t rx_data[8];
+
+      if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) == HAL_OK) {
+        if (rx_header.StdId >= 0x205 && rx_header.StdId <= 0x208) {
+          uint32_t id = rx_header.StdId - 0x204; // 1-4
+          if (id >= 1 && id <= 4 && g_motors[id - 1]) {
+            GM6020_Decode(g_motors[id - 1], rx_data);
+          }
+        }
+      }
+
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header1, can1_rx_data) == HAL_OK) 
     {
-      test[0] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[0]);
-      test[1] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[1]);
-      test[2] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[2]);
-      test[3] = (uint32_t)GM6020_GetOutputAngleRad(g_steer_motors[3]);
       
       // 2. 解码 GM6020 舵电机的反馈
       CAN_Rx_Decode_Chassis(&rx_header1, can1_rx_data);

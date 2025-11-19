@@ -75,6 +75,8 @@ static uint8_t g_gm6020_tx_buf[8] = {0}; // 0x1FE (CAN1, 电流模式)
 volatile float g_debug_steer_target_angle[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 volatile float g_debug_steer_fdb[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 volatile float g_debug_steer_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+// 新增：保存解算出的舵向角（rad），用于脱离 PID 观察/记录
+volatile float g_computed_steer_angle[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 // -----------------------------
 
 float vx_cmd = 0.0f; // 最终底盘坐标系 vx
@@ -103,7 +105,7 @@ static void ControlChassisYaw(void);
 static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis_vx, float* chassis_vy);
 
 // [新增] 计算最短路径误差
-static float CalculateShortestAngleError(float target_rad, float current_rad);
+// static float CalculateShortestAngleError(float target_rad, float current_rad);
 
 
 // -----------------------------------------------------------------
@@ -301,17 +303,17 @@ static void ControlChassisYaw(void)
  * @param current_rad 当前角度 (rad, 0~2PI)
  * @return 误差值，范围在 [-PI, PI]
  */
-static float CalculateShortestAngleError(float target_rad, float current_rad) {
-    float error = target_rad - current_rad;
-    // 归一化到 -PI ~ PI
-    while (error > M_PI) {
-        error -= M_TWOPI;
-    }
-    while (error < -M_PI) {
-        error += M_TWOPI;
-    }
-    return error;
-}
+// static float CalculateShortestAngleError(float target_rad, float current_rad) {
+//     float error = target_rad - current_rad;
+//     // 归一化到 -PI ~ PI
+//     while (error > M_PI) {
+//         error -= M_TWOPI;
+//     }
+//     while (error < -M_PI) {
+//         error += M_TWOPI;
+//     }
+//     return error;
+// }
 
 /**
  * @brief (V1.6.3) 运行舵轮解算和8个PID环 - 包含最短路径逻辑
@@ -334,16 +336,17 @@ static void RunSwerveControl(float vx, float vy, float wz)
   for (int i = 0; i < 4; ++i) {
     SwerveModuleState target_state = SwerveDrive_GetModuleState(g_swerve_drive, i);
     
-  // --- 1. 航向电机 (GM6020) 角度控制 ---
+  // --- 1. 航向电机 (GM6020) 角度计算 (仅计算，不下发) ---
   float steer_fdb = GM6020_GetAngleRad(g_steer_motors[i]);
-  g_debug_steer_target_angle[i] = target_state.angle_rad+PI;
+  g_debug_steer_target_angle[i] = target_state.angle_rad + PI;
   g_debug_steer_fdb[i] = steer_fdb;
-  // 直接使用角度 PID，内部处理 -PI~PI 最短路径与微分先行
-  Pid_SetParams(g_steer_pids[i], &steer_pid_params);
-  float steer_output = Pid_CalcAngle(g_steer_pids[i], target_state.angle_rad+PI, steer_fdb);
-  g_debug_steer_output[i] = steer_output;
-    
-    GM6020_SetInputCurrent(g_steer_motors[i], (int16_t)steer_output); 
+  // 仅保留计算出来的角度供观测，注释掉实际 PID 计算与下发动作
+  //Pid_SetParams(g_steer_pids[i], &steer_pid_params);
+  //float steer_output = Pid_CalcAngle(g_steer_pids[i], target_state.angle_rad+PI, steer_fdb);
+  //g_debug_steer_output[i] = steer_output;
+  //GM6020_SetInputCurrent(g_steer_motors[i], (int16_t)steer_output);
+  // 将计算出的目标角度导出为全局变量，便于外部监测
+  g_computed_steer_angle[i] = target_state.angle_rad + PI;
 
     // --- 2. 轮速电机 (M3508) ---
     // [警告] M3508 用于驱动车轮，必须是速度闭环！
@@ -362,8 +365,8 @@ static void RunSwerveControl(float vx, float vy, float wz)
 static void SetAllMotorsZero(void) {
   // 1. 8个舵轮电机
   for (int i = 0; i < 4; ++i) {
-      if(g_steer_motors[i]) GM6020_SetInputCurrent(g_steer_motors[i], 0); 
-      if(g_wheel_motors[i]) M3508_SetInputCurrent(g_wheel_motors[i], 0);
+    if(g_steer_motors[i]) GM6020_SetInput(g_steer_motors[i], 0.0f);
+    if(g_wheel_motors[i]) M3508_SetInputCurrent(g_wheel_motors[i], 0);
   }
   // 2. Yaw 电机 (使用 mit_ctrl 模拟速度模式，发送速度0)
   mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -392,16 +395,17 @@ static void SendChassisCanCommands(void) {
   g_m3508_tx_buf[6] = (c4 >> 8); g_m3508_tx_buf[7] = (c4);
   CAN_Send_Msg(&hcan2, g_m3508_tx_buf, 0x200, 8);
 
-  // 2. GM6020 (CAN1)
-  int16_t v1 = GM6020_GetInputCurrent(g_steer_motors[GM6020_STEER_FR_ID - 1]); 
-  int16_t v2 = GM6020_GetInputCurrent(g_steer_motors[GM6020_STEER_FL_ID - 1]);
-  int16_t v3 = GM6020_GetInputCurrent(g_steer_motors[GM6020_STEER_BL_ID - 1]);
-  int16_t v4 = GM6020_GetInputCurrent(g_steer_motors[GM6020_STEER_BR_ID - 1]);
-  g_gm6020_tx_buf[0] = (v1 >> 8); g_gm6020_tx_buf[1] = (v1);
-  g_gm6020_tx_buf[2] = (v2 >> 8); g_gm6020_tx_buf[3] = (v2);
-  g_gm6020_tx_buf[4] = (v3 >> 8); g_gm6020_tx_buf[5] = (v3);
-  g_gm6020_tx_buf[6] = (v4 >> 8); g_gm6020_tx_buf[7] = (v4);
-  CAN_Send_Msg(&hcan1, g_gm6020_tx_buf, 0x1FE, 8); // [V1.5.0] 切换到电流帧 0x1FE
+  // // 2. GM6020 (CAN1)
+  // // GM6020 steering outputs are disabled for now (observation-only mode)
+  // int16_t v1 = 0;
+  // int16_t v2 = 0;
+  // int16_t v3 = 0;
+  // int16_t v4 = 0;
+  // g_gm6020_tx_buf[0] = (v1 >> 8); g_gm6020_tx_buf[1] = (v1);
+  // g_gm6020_tx_buf[2] = (v2 >> 8); g_gm6020_tx_buf[3] = (v2);
+  // g_gm6020_tx_buf[4] = (v3 >> 8); g_gm6020_tx_buf[5] = (v3);
+  // g_gm6020_tx_buf[6] = (v4 >> 8); g_gm6020_tx_buf[7] = (v4);
+  // CAN_Send_Msg(&hcan1, g_gm6020_tx_buf, 0x1FE, 8); // send zeroed steering currents
   
   // 3. DM4310 Yaw 电机 (CAN2)
   // (已在 ControlChassisYaw() 和 SetAllMotorsZero() 中通过 speed_ctrl() 发送)

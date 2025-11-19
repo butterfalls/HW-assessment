@@ -1,34 +1,37 @@
 /* USER CODE BEGIN Header */
 /**
- ******************************************************************************
- * @file      :main.c
- * @brief          : Main program body
- ******************************************************************************
- * @attention
- *
- * Copyright (c) 2025 STMicroelectronics.
- * All rights reserved.
- *
- * This software is licensed under terms that can be found in the LICENSE file
- * in the root directory of this software component.
- * If no LICENSE file comes with this software, it is provided AS-IS.
- *
- ******************************************************************************
- */
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "can.h"
 #include "dma.h"
-#include "gpio.h"
-#include "iwdg.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "main_task.hpp"
+#include "iwdg.h"
+#include "pid.hpp"       // 包含 C 兼容头文件
+#include "gm6020.hpp"    // 包含 C 兼容头文件
+#include "main_task.hpp" // declare MainTask_Loop()
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,7 +58,11 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+void Control_Init(void);
+void Control_CAN_Tx(void);
+void Control_Loop(void);
+void run_position_control_loop(void);
+float clamp_current(float current);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -104,6 +111,7 @@ int main(void) {
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  Control_Init();
   MainInit();
   /* USER CODE END 2 */
 
@@ -164,11 +172,156 @@ void SystemClock_Config(void) {
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (&htim6 == htim) 
-  {
-    MainTask_Loop(); 
+  if (htim->Instance == TIM6) {
+    // 1. 运行控制任务 (PID计算)
+    MainTask_Loop();
+    Control_Loop();
+
+    // 2. 发送CAN控制报文
+    Control_CAN_Tx();
   }
 }
+
+/* 控制初始化/循环/CAN发送实现 (仿照用户样例) */
+
+/* Private variables ---------------------------------------------------------*/
+static float g_target_pos_rad = 0.0f;
+static float g_feedback_pos_rad = 0.0f;
+
+static PidHandle g_pid_controller_1;
+GM6020Handle g_motors[4]; // 4个电机
+
+// --- CAN 发送缓冲区 ---
+static uint8_t g_can_tx_msg_1ff[8]; // 用于ID 1-4
+
+// --- PID 参数 (C 结构体) ---
+static PidParams g_position_pid_params = {
+  .Kp = 800.0f,
+  .Ki = 7.0f,
+  .Kd = 20000.0f,
+  .max_out = 16384.0f,
+  .max_integral = 4000.0f,
+  .deadband = 0.0f,
+  .integral_range = 0.0f,
+  .d_filter_gain = 0.0f,
+  .dt = 0.001f
+};
+
+/* Control functions (copied/adapted) */
+void Control_Init(void)
+{
+  int i;
+  // 1. 创建所有电机对象
+  for (i = 0; i < 4; i++) {
+    g_motors[i] = GM6020_Create(i + 1);
+  }
+
+  // 2. 根据任务创建PID控制器 (默认位置任务)
+  g_pid_controller_1 = Pid_Create(&g_position_pid_params);
+
+  // 3. 配置CAN过滤器
+  CAN_FilterTypeDef filter_config;
+  filter_config.FilterBank = 0;
+  filter_config.FilterMode = CAN_FILTERMODE_IDMASK;
+  filter_config.FilterScale = CAN_FILTERSCALE_32BIT;
+  filter_config.FilterIdHigh = 0x0000;
+  filter_config.FilterIdLow = 0x0000;
+  filter_config.FilterMaskIdHigh = 0x0000;
+  filter_config.FilterMaskIdLow = 0x0000;
+  filter_config.FilterFIFOAssignment = CAN_RX_FIFO0;
+  filter_config.FilterActivation = ENABLE;
+  filter_config.SlaveStartFilterBank = 14;
+
+  if (HAL_CAN_ConfigFilter(&hcan1, &filter_config) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (HAL_CAN_Start(&hcan1) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK) {
+    Error_Handler();
+  }
+
+  /* Ensure CAN2 is started and FIFO1 notification is enabled so HAL_CAN_RxFifo1MsgPendingCallback is invoked */
+  if (HAL_CAN_Start(&hcan2) != HAL_OK) {
+    Error_Handler();
+  }
+  if (HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO1_MSG_PENDING) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) {
+    Error_Handler();
+  }
+}
+
+/* 用户任务：速度闭环 (已移除) */
+
+/* 用户任务：位置闭环 */
+void run_position_control_loop(void)
+{
+  static uint32_t counter_ms = 0;
+  static uint8_t state = 0;
+  counter_ms++;
+
+  if (counter_ms % 2000 == 0) {
+    state = (state + 1) % 6;
+    switch (state) {
+      case 0: g_target_pos_rad = -5.0f * M_PI / 6.0f; break;
+      case 1: g_target_pos_rad = 5.0f * M_PI / 6.0f; break;
+      case 2: g_target_pos_rad = M_PI / 3.0f; break;
+      case 3: g_target_pos_rad = 2.0f * M_PI / 3.0f; break;
+      case 4: g_target_pos_rad = M_PI / 4.0f; break;
+      case 5: g_target_pos_rad = -M_PI; break;
+    }
+  }
+
+  if (g_motors[0]) {
+    g_feedback_pos_rad = GM6020_GetAngleRad(g_motors[0]);
+    float output_current = Pid_CalcAngle(g_pid_controller_1, g_target_pos_rad, g_feedback_pos_rad);
+    GM6020_SetInput(g_motors[0], output_current);
+  }
+}
+
+/* Control loop called from TIM6 */
+void Control_Loop(void)
+{
+  // 默认运行位置控制任务
+  Pid_SetParams(g_pid_controller_1, &g_position_pid_params);
+  run_position_control_loop();
+}
+
+float clamp_current(float current) {
+  if (current > 16384.0f) return 16384.0f;
+  if (current < -16384.0f) return -16384.0f;
+  return current;
+}
+
+
+/* CAN TX: pack GM6020 SetInput values into 0x1FE / 0x2FE frames */
+void Control_CAN_Tx(void)
+{
+  static CAN_TxHeaderTypeDef tx_header_1ff;
+  static uint32_t tx_mailbox_1ff;
+  int i;
+
+  tx_header_1ff.StdId = 0x1FE;
+  tx_header_1ff.IDE = CAN_ID_STD;
+  tx_header_1ff.RTR = CAN_RTR_DATA;
+  tx_header_1ff.DLC = 8;
+  tx_header_1ff.TransmitGlobalTime = DISABLE;
+
+  for (i = 0; i < 4; i++) {
+    int16_t voltage = (int16_t)clamp_current(GM6020_GetInput(g_motors[i]));
+    g_can_tx_msg_1ff[i * 2] = (voltage >> 8) & 0xFF;
+    g_can_tx_msg_1ff[i * 2 + 1] = (voltage & 0xFF);
+  }
+
+  HAL_CAN_AddTxMessage(&hcan1, &tx_header_1ff, g_can_tx_msg_1ff, &tx_mailbox_1ff);
+}
+
 /* USER CODE END 4 */
 
 /**
