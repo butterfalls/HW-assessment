@@ -396,27 +396,45 @@ void Control_CAN_Tx(void)
   g_tx_header_1fe.DLC = 8;
   g_tx_header_1fe.TransmitGlobalTime = DISABLE;
 
+  /*
+   * 注意索引与物理ID/打包顺序的对应关系：
+   * - 舵轮解算输出数组顺序: 0:FR, 1:FL, 2:BL, 3:BR
+   * - GM6020 反馈/发送物理ID顺序 (0x1FE payload 与 0x205..0x208): 1:FL, 2:BL, 3:BR, 4:FR
+   * 为确保“目标角度”与“对应电机反馈/打包槽位”一致，这里按物理ID顺序循环，
+   * 并将其映射到解算数组索引。
+   */
   for (i = 0; i < 4; i++) {
-    /* 1) 从 C++ 模块读取分解出的目标角度 (rad) */
-    float target_angle = g_computed_steer_angle[i];
-    /* 2) 读取当前物理角度 (rad) 并应用检测零点偏移修正 */
-    float current_angle = GM6020_GetAngleRad(g_motors[i]);
-    /* apply per-motor mechanical zero offset */
-    current_angle += g_motor_angle_offsets[i];
+    int motor_idx = i; // g_motors[] 与 0x205..0x208 的物理顺序一致: 0:FL,1:BL,2:BR,3:FR
+    int module_idx;    // 舵轮模块索引 (FR=0, FL=1, BL=2, BR=3)
+    switch (i) {
+      case 0: module_idx = SWERVE_FL_MODULE; break; // 物理ID1 -> FL -> 解算索引1
+      case 1: module_idx = SWERVE_BL_MODULE; break; // 物理ID2 -> BL -> 解算索引2
+      case 2: module_idx = SWERVE_BR_MODULE; break; // 物理ID3 -> BR -> 解算索引3
+      case 3: module_idx = SWERVE_FR_MODULE; break; // 物理ID4 -> FR -> 解算索引0
+      default: module_idx = SWERVE_FR_MODULE; break;
+    }
+
+    /* 1) 从 C++ 模块读取分解出的目标角度 (rad) - 使用对应模块索引 */
+    float target_angle = g_computed_steer_angle[module_idx];
+    /* 2) 读取当前物理角度 (rad) 并应用检测零点偏移修正（按物理电机顺序）*/
+    float current_angle = GM6020_GetAngleRad(g_motors[motor_idx]);
+    current_angle += g_motor_angle_offsets[motor_idx];
     /* normalize to [0, 2PI) to keep angle in expected range */
     while (current_angle < 0.0f) current_angle += 2.0f * M_PI;
     while (current_angle >= 2.0f * M_PI) current_angle -= 2.0f * M_PI;
+
     /* 3) 运行角度 PID，输出控制量（电流） */
-    if (g_steer_pids_c[i]) {
-      Pid_SetParams(g_steer_pids_c[i], &g_position_pid_params);
-    float steer_output = Pid_CalcAngle(g_steer_pids_c[i], target_angle, current_angle);
-    /* 保存到全局可观察变量，便于调试 */
-    g_steer_output_c[i] = target_angle;
-    /* 把 PID 输出写回 motor input，后续打包发送 */
-    GM6020_SetInput(g_motors[i], steer_output);
+    if (g_steer_pids_c[motor_idx]) {
+      Pid_SetParams(g_steer_pids_c[motor_idx], &g_position_pid_params);
+      float steer_output = Pid_CalcAngle(g_steer_pids_c[motor_idx], target_angle, current_angle);
+      /* 保存到全局可观察变量：按模块索引写入实际 PID 输出 */
+      g_steer_output_c[module_idx] = steer_output;
+      /* 把 PID 输出写回 motor input，后续打包发送 */
+      GM6020_SetInput(g_motors[motor_idx], steer_output);
     }
-    /* 4) 打包为 int16 并写入 CAN 缓冲区 */
-    int16_t voltage = (int16_t)clamp_current(GM6020_GetInput(g_motors[i]));
+
+    /* 4) 打包为 int16 并写入 CAN 缓冲区（按物理ID顺序 -> 0x1FE payload 顺序） */
+    int16_t voltage = (int16_t)clamp_current(GM6020_GetInput(g_motors[motor_idx]));
     g_can_tx_msg_1ff[i * 2] = (voltage >> 8) & 0xFF;
     g_can_tx_msg_1ff[i * 2 + 1] = (voltage & 0xFF);
   }
@@ -438,10 +456,10 @@ static void Wheel_CAN_Tx(void)
   tx_header_200.TransmitGlobalTime = DISABLE;
 
   /* ID 顺序: 1(F L) 2(B L) 3(B R) 4(F R) */
-  int16_t c2 = (int16_t)g_wheel_output_c[SWERVE_FL_MODULE];
-  int16_t c3 = (int16_t)g_wheel_output_c[SWERVE_BL_MODULE];
-  int16_t c4 = (int16_t)g_wheel_output_c[SWERVE_BR_MODULE];
-  int16_t c1 = (int16_t)g_wheel_output_c[SWERVE_FR_MODULE];
+  int16_t c1 = (int16_t)g_wheel_output_c[SWERVE_FL_MODULE];
+  int16_t c2 = (int16_t)g_wheel_output_c[SWERVE_BL_MODULE];
+  int16_t c3 = (int16_t)g_wheel_output_c[SWERVE_BR_MODULE];
+  int16_t c4 = (int16_t)g_wheel_output_c[SWERVE_FR_MODULE];
   // int16_t c1 = 600;
   // int16_t c2 = 300;
   // int16_t c3 = 600;

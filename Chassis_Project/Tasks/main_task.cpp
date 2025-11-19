@@ -91,8 +91,8 @@ volatile float g_yaw_bias = 0.0f;
  * g_vy_sign: +1 保持原方向，-1 取反 Y
  * 之前硬编码对 vy 取反，现在改为参数化，默认保持之前行为：vx 不反，vy 反
  */
-volatile float g_vx_sign = -1.0f; // 用户反馈 X 方向反了 -> 默认取反
-volatile float g_vy_sign = 1.0f; // 保持之前对 Y 的反转
+volatile float g_vx_sign = 1.0f; // 用户反馈 X 方向反了 -> 默认取反
+volatile float g_vy_sign = -1.0f; // 保持之前对 Y 的反转
 
 /* 当摇杆处于微小死区内时：
  * - 舵轮朝向采用“小陀螺”自转的默认方向（只对齐角度）
@@ -404,7 +404,7 @@ static void RunSwerveControl(float vx, float vy, float wz)
   steer_fdb += g_steer_angle_offsets_cpp[i];
   while (steer_fdb < 0.0f) steer_fdb += 2.0f * M_PI;
   while (steer_fdb >= 2.0f * M_PI) steer_fdb -= 2.0f * M_PI;
-  g_debug_steer_target_angle[i] = target_state.angle_rad + PI;
+  g_debug_steer_target_angle[i] = target_state.angle_rad;
   g_debug_steer_fdb[i] = steer_fdb;
   // 仅保留计算出来的角度供观测，注释掉实际 PID 计算与下发动作
   //Pid_SetParams(g_steer_pids[i], &steer_pid_params);
@@ -412,7 +412,7 @@ static void RunSwerveControl(float vx, float vy, float wz)
   //g_debug_steer_output[i] = steer_output;
   //GM6020_SetInputCurrent(g_steer_motors[i], (int16_t)steer_output);
   // 将计算出的目标角度导出为全局变量，便于外部监测
-  g_computed_steer_angle[i] = target_state.angle_rad + PI;
+  g_computed_steer_angle[i] = target_state.angle_rad;
 
   /*
    * 为了把“分解后的方向值”作为电机的目标值暴露给调试/观察逻辑，

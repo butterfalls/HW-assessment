@@ -149,31 +149,34 @@ static void CAN_Rx_Decode_Chassis(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_da
 
   switch (id) {
     // 1. M3508 轮电机反馈 (CAN2: 0x201 - 0x204)
-    case 0x201: 
-      M3508_Decode(g_wheel_motors[SWERVE_FR_MODULE], rx_data);
-      break;
-    case 0x202: 
+    // ID1->0x201, ID2->0x202, ID3->0x203, ID4->0x204
+    // 按照系统约定：ID1=FL, ID2=BL, ID3=BR, ID4=FR
+    case 0x201:
       M3508_Decode(g_wheel_motors[SWERVE_FL_MODULE], rx_data);
       break;
-    case 0x203: 
+    case 0x202:
       M3508_Decode(g_wheel_motors[SWERVE_BL_MODULE], rx_data);
       break;
-    case 0x204: 
+    case 0x203:
       M3508_Decode(g_wheel_motors[SWERVE_BR_MODULE], rx_data);
+      break;
+    case 0x204:
+      M3508_Decode(g_wheel_motors[SWERVE_FR_MODULE], rx_data);
       break;
 
     // 2. GM6020 航向电机反馈 (CAN1: 0x205 - 0x208)
-    case 0x205: 
-      GM6020_Decode(g_steer_motors[SWERVE_FR_MODULE], rx_data);
-      break;
-    case 0x206: 
+    // 同样遵循：ID1=FL, ID2=BL, ID3=BR, ID4=FR
+    case 0x205:
       GM6020_Decode(g_steer_motors[SWERVE_FL_MODULE], rx_data);
       break;
-    case 0x207: 
+    case 0x206:
       GM6020_Decode(g_steer_motors[SWERVE_BL_MODULE], rx_data);
       break;
-    case 0x208: 
+    case 0x207:
       GM6020_Decode(g_steer_motors[SWERVE_BR_MODULE], rx_data);
+      break;
+    case 0x208:
+      GM6020_Decode(g_steer_motors[SWERVE_FR_MODULE], rx_data);
       break;
       
     // 3. DM4310 Yaw 电机反馈 (CAN2: ID 0x01)
