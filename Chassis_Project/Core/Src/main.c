@@ -194,6 +194,14 @@ static float g_feedback_pos_rad = 0.0f;
 static PidHandle g_pid_controller_1;
 GM6020Handle g_motors[4]; // 4个电机
 
+/* 每个舵轮的角度偏移修正 (rad)，用于将检测零点对齐到机械零点 */
+static const float g_motor_angle_offsets[4] = {
+  -0.52f,  /* g_motors[0] 加 0.52 */
+  +1.08f, /* g_motors[1] 减 1.08 */
+  -0.08f,  /* g_motors[2] 加 0.08 */
+  -1.74f   /* g_motors[3] 加 1.74 */
+};
+
 // --- CAN 发送缓冲区 ---
 static uint8_t g_can_tx_msg_1ff[8]; // 用于ID 1-4 (共享缓冲区，供 0x1FE/0x2FE 等复用)
 
@@ -204,13 +212,13 @@ static uint32_t g_tx_mailbox_1fe;
 // --- PID 参数 (C 结构体) ---
 static PidParams g_position_pid_params = {
   .Kp = 2200.0f,
-  .Ki = 2.0f,
+  .Ki = 200.0f,
   .Kd = 200.0f,
   .max_out = 16384.0f,
   .max_integral = 5000.0f,
-  .deadband = 0.01f,
+  .deadband = 0.002f,
   .integral_range = 0.5f,
-  .d_filter_gain = 0.15f,
+  .d_filter_gain = 0.8f,
   .dt = 0.001f
 };
 
@@ -295,6 +303,11 @@ void run_position_control_loop(void)
 
   if (g_motors[0]) {
     g_feedback_pos_rad = GM6020_GetAngleRad(g_motors[0]);
+    /* Apply mechanical zero offset for motor 0 */
+    g_feedback_pos_rad += g_motor_angle_offsets[0];
+    /* normalize to [0, 2PI) */
+    while (g_feedback_pos_rad < 0.0f) g_feedback_pos_rad += 2.0f * M_PI;
+    while (g_feedback_pos_rad >= 2.0f * M_PI) g_feedback_pos_rad -= 2.0f * M_PI;
     float output_current = Pid_CalcAngle(g_pid_controller_1, g_target_pos_rad, g_feedback_pos_rad);
     GM6020_SetInput(g_motors[0], output_current);
   }
@@ -330,14 +343,19 @@ void Control_CAN_Tx(void)
   for (i = 0; i < 4; i++) {
     /* 1) 从 C++ 模块读取分解出的目标角度 (rad) */
     float target_angle = g_computed_steer_angle[i];
-    /* 2) 读取当前物理角度 (rad) */
+    /* 2) 读取当前物理角度 (rad) 并应用检测零点偏移修正 */
     float current_angle = GM6020_GetAngleRad(g_motors[i]);
+    /* apply per-motor mechanical zero offset */
+    current_angle += g_motor_angle_offsets[i];
+    /* normalize to [0, 2PI) to keep angle in expected range */
+    while (current_angle < 0.0f) current_angle += 2.0f * M_PI;
+    while (current_angle >= 2.0f * M_PI) current_angle -= 2.0f * M_PI;
     /* 3) 运行角度 PID，输出控制量（电流） */
     if (g_steer_pids_c[i]) {
       Pid_SetParams(g_steer_pids_c[i], &g_position_pid_params);
     float steer_output = Pid_CalcAngle(g_steer_pids_c[i], target_angle, current_angle);
     /* 保存到全局可观察变量，便于调试 */
-    g_steer_output_c[i] = current_angle;
+    g_steer_output_c[i] = target_angle;
     /* 把 PID 输出写回 motor input，后续打包发送 */
     GM6020_SetInput(g_motors[i], steer_output);
     }

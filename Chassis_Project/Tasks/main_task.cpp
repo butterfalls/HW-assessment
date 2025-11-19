@@ -79,6 +79,14 @@ volatile float g_debug_steer_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 volatile float g_computed_steer_angle[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 // -----------------------------
 
+/* 每个舵轮的角度偏移修正 (rad)，用于将检测零点对齐到机械零点 */
+static const float g_steer_angle_offsets_cpp[4] = {
+  0.52f,  /* motor 0 +0.52 */
+  -1.08f, /* motor 1 -1.08 */
+  0.08f,  /* motor 2 +0.08 */
+  1.74f   /* motor 3 +1.74 */
+};
+
 float vx_cmd = 0.0f; // 最终底盘坐标系 vx
 float vy_cmd = 0.0f; // 最终底盘坐标系 vy
 float wz_cmd = 0.0f; // 最终底盘旋转 wz
@@ -324,11 +332,16 @@ static void RunSwerveControl(float vx, float vy, float wz)
   
   // [优化] 使用 GetAngleRad (0-2PI) 获取当前物理角度，避免溢出
   float current_angles[4] = {
-      GM6020_GetAngleRad(g_steer_motors[SWERVE_FR_MODULE]),
-      GM6020_GetAngleRad(g_steer_motors[SWERVE_FL_MODULE]),
-      GM6020_GetAngleRad(g_steer_motors[SWERVE_BL_MODULE]),
-      GM6020_GetAngleRad(g_steer_motors[SWERVE_BR_MODULE])
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_FR_MODULE]) + g_steer_angle_offsets_cpp[SWERVE_FR_MODULE],
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_FL_MODULE]) + g_steer_angle_offsets_cpp[SWERVE_FL_MODULE],
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_BL_MODULE]) + g_steer_angle_offsets_cpp[SWERVE_BL_MODULE],
+      GM6020_GetAngleRad(g_steer_motors[SWERVE_BR_MODULE]) + g_steer_angle_offsets_cpp[SWERVE_BR_MODULE]
   };
+  /* normalize to [0, 2PI) */
+  for (int _i = 0; _i < 4; ++_i) {
+    while (current_angles[_i] < 0.0f) current_angles[_i] += 2.0f * M_PI;
+    while (current_angles[_i] >= 2.0f * M_PI) current_angles[_i] -= 2.0f * M_PI;
+  }
 
   // 解算目标角度和速度
   SwerveDrive_Calculate(g_swerve_drive, vx, vy, wz, current_angles);
@@ -338,6 +351,9 @@ static void RunSwerveControl(float vx, float vy, float wz)
     
   // --- 1. 航向电机 (GM6020) 角度计算 (仅计算，不下发) ---
   float steer_fdb = GM6020_GetAngleRad(g_steer_motors[i]);
+  steer_fdb += g_steer_angle_offsets_cpp[i];
+  while (steer_fdb < 0.0f) steer_fdb += 2.0f * M_PI;
+  while (steer_fdb >= 2.0f * M_PI) steer_fdb -= 2.0f * M_PI;
   g_debug_steer_target_angle[i] = target_state.angle_rad + PI;
   g_debug_steer_fdb[i] = steer_fdb;
   // 仅保留计算出来的角度供观测，注释掉实际 PID 计算与下发动作
