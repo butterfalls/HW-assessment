@@ -98,7 +98,7 @@ extern "C" {
 #define CAN_ID_RX_YAW_TARGET 0x151
 
 // [V1.5.0] 小陀螺模式旋转速度 (rad/s)
-#define SPIN_MODE_W_SPEED (M_PI * 2.0f) // 1 r/s
+#define SPIN_MODE_W_SPEED (M_PI * 0.8f) // 1 r/s
 
 /* Exported constants --------------------------------------------------------*/
 extern const float kCtrlPeriod; // = 0.001f (1ms)

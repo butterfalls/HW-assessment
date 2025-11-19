@@ -30,14 +30,14 @@ void SwerveDrive::calculate(const float vx, const float vy, const float wz, cons
     float A_0 = vx + wz * W_;
     float B_0 = vy + wz * L_;
     // 轮子 1 (FL): {+L, +W}
-    float A_1 = vx - wz * W_;
-    float B_1 = vy + wz * L_;
+    float A_1 = vx + wz * W_; //与BR交换
+    float B_1 = vy - wz * L_;
     // 轮子 2 (BL): {-L, +W}
     float A_2 = vx - wz * W_;
     float B_2 = vy - wz * L_;
     // 轮子 3 (BR): {-L, -W}
-    float A_3 = vx + wz * W_;
-    float B_3 = vy - wz * L_;
+    float A_3 = vx - wz * W_; //与FL交换
+    float B_3 = vy + wz * L_;
 
     float A[] = {A_0, A_1, A_2, A_3};
     float B[] = {B_0, B_1, B_2, B_3};
