@@ -192,7 +192,11 @@ static PidHandle g_pid_controller_1;
 GM6020Handle g_motors[4]; // 4个电机
 
 // --- CAN 发送缓冲区 ---
-static uint8_t g_can_tx_msg_1ff[8]; // 用于ID 1-4
+static uint8_t g_can_tx_msg_1ff[8]; // 用于ID 1-4 (共享缓冲区，供 0x1FE/0x2FE 等复用)
+
+/* 共享 CAN TX header / mailbox，便于将 GM6020 的 0x1FE 报文与其它发送逻辑合并 */
+static CAN_TxHeaderTypeDef g_tx_header_1fe;
+static uint32_t g_tx_mailbox_1fe;
 
 // --- PID 参数 (C 结构体) ---
 static PidParams g_position_pid_params = {
@@ -252,9 +256,6 @@ void Control_Init(void)
     Error_Handler();
   }
 
-  if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) {
-    Error_Handler();
-  }
 }
 
 /* 用户任务：速度闭环 (已移除) */
@@ -303,15 +304,14 @@ float clamp_current(float current) {
 /* CAN TX: pack GM6020 SetInput values into 0x1FE / 0x2FE frames */
 void Control_CAN_Tx(void)
 {
-  static CAN_TxHeaderTypeDef tx_header_1ff;
-  static uint32_t tx_mailbox_1ff;
   int i;
 
-  tx_header_1ff.StdId = 0x1FE;
-  tx_header_1ff.IDE = CAN_ID_STD;
-  tx_header_1ff.RTR = CAN_RTR_DATA;
-  tx_header_1ff.DLC = 8;
-  tx_header_1ff.TransmitGlobalTime = DISABLE;
+  /* 使用文件范围共享的 header/mailbox，便于与其它发送路径共用同一组变量 */
+  g_tx_header_1fe.StdId = 0x1FE;
+  g_tx_header_1fe.IDE = CAN_ID_STD;
+  g_tx_header_1fe.RTR = CAN_RTR_DATA;
+  g_tx_header_1fe.DLC = 8;
+  g_tx_header_1fe.TransmitGlobalTime = DISABLE;
 
   for (i = 0; i < 4; i++) {
     int16_t voltage = (int16_t)clamp_current(GM6020_GetInput(g_motors[i]));
@@ -319,7 +319,7 @@ void Control_CAN_Tx(void)
     g_can_tx_msg_1ff[i * 2 + 1] = (voltage & 0xFF);
   }
 
-  HAL_CAN_AddTxMessage(&hcan1, &tx_header_1ff, g_can_tx_msg_1ff, &tx_mailbox_1ff);
+  HAL_CAN_AddTxMessage(&hcan1, &g_tx_header_1fe, g_can_tx_msg_1ff, &g_tx_mailbox_1fe);
 }
 
 /* USER CODE END 4 */
