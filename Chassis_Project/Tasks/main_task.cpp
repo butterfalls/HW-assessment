@@ -94,6 +94,13 @@ volatile float g_yaw_bias = 0.0f;
 volatile float g_vx_sign = -1.0f; // 用户反馈 X 方向反了 -> 默认取反
 volatile float g_vy_sign = 1.0f; // 保持之前对 Y 的反转
 
+/* 当摇杆处于微小死区内时：
+ * - 舵轮朝向采用“小陀螺”自转的默认方向（只对齐角度）
+ * - 轮电机速度强制为 0（不转动）
+ * 仅在非 MODE_SPIN 模式下生效，避免影响小陀螺模式本身。
+ */
+volatile bool g_idle_spin_orientation = false;
+
 /* 每个舵轮的角度偏移修正 (rad)，用于将检测零点对齐到机械零点 */
 static const float g_steer_angle_offsets_cpp[4] = {
   0.52f,  /* motor 0 +0.52 */
@@ -307,8 +314,19 @@ static void RunControlMode(void) {
             break;
     }
     
-    // 3. 将最终的底盘系指令 (vx, vy, wz) 设置给舵轮解算器
+  // 3. 死区逻辑：当摇杆 x/y 在 ±0.05 内，默认对齐到“小陀螺”朝向，但轮电机不转
+  //    仅在非 MODE_SPIN 下生效
+  const float DEADZONE = 0.05f;
+  bool in_deadzone = (fabsf(g_rc_cmd_vx) <= DEADZONE) && (fabsf(g_rc_cmd_vy) <= DEADZONE);
+  if (in_deadzone && (g_control_mode == MODE_SEPARATE || g_control_mode == MODE_FOLLOW)) {
+    g_idle_spin_orientation = true;
+    // 使用小陀螺的正向自转方向计算角度（速度稍后在 RunSwerveControl 中强制为 0）
+    RunSwerveControl(0.0f, 0.0f, SPIN_MODE_W_SPEED);
+  } else {
+    g_idle_spin_orientation = false;
+    // 将最终的底盘系指令 (vx, vy, wz) 设置给舵轮解算器
     RunSwerveControl(vx_cmd, vy_cmd, wz_cmd);
+  }
 }
 
 static void RunSafetyMode(void) {
@@ -412,8 +430,14 @@ static void RunSwerveControl(float vx, float vy, float wz)
   float wheel_fdb = M3508_GetOutputVelRadS(g_wheel_motors[i]);
   /* 保存反馈值与解算出的目标速度；不在此处做 PID 与电流下发 */
   g_m3508_feedback[i] = -wheel_fdb;
-  g_m3508_target[i] = target_state.speed_rads; // 保留原先变量名
-  g_computed_wheel_speed[i] = target_state.speed_rads; // 供 main.c 使用
+  if (g_idle_spin_orientation) {
+    // 死区内：只对齐角度，轮电机不动
+    g_m3508_target[i] = 0.0f;
+    g_computed_wheel_speed[i] = 0.0f;
+  } else {
+    g_m3508_target[i] = target_state.speed_rads; // 保留原先变量名
+    g_computed_wheel_speed[i] = target_state.speed_rads; // 供 main.c 使用
+  }
   }
 }
 
