@@ -320,8 +320,8 @@ static void RunControlMode(void) {
   bool in_deadzone = (fabsf(g_rc_cmd_vx) <= DEADZONE) && (fabsf(g_rc_cmd_vy) <= DEADZONE);
   if (in_deadzone && (g_control_mode == MODE_SEPARATE || g_control_mode == MODE_FOLLOW)) {
     g_idle_spin_orientation = true;
-    // 使用小陀螺的正向自转方向计算角度（速度稍后在 RunSwerveControl 中强制为 0）
-    RunSwerveControl(0.0f, 0.0f, SPIN_MODE_W_SPEED);
+    // 仅对齐到“小陀螺”朝向，不希望残留旋转速度指令 -> 传入 wz=0
+    RunSwerveControl(0.0f, 0.0f, 0.0f);
   } else {
     g_idle_spin_orientation = false;
     // 将最终的底盘系指令 (vx, vy, wz) 设置给舵轮解算器
@@ -343,6 +343,11 @@ static void RunEStopMode(void) {
  */
 static void ControlChassisYaw(void)
 {
+  // 急停时：立刻下发 0 速度并返回，避免任何跟随/旋转输出
+  if (g_control_mode == MODE_ESTOP) {
+    mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    return;
+  }
   float target_yaw = g_target_gimbal_yaw_rad;
   float current_yaw = g_current_gimbal_yaw_rad;
   // 使用角度 PID：自动处理环绕、微分先行与滤波
@@ -394,7 +399,13 @@ static void RunSwerveControl(float vx, float vy, float wz)
   }
 
   // 解算目标角度和速度
-  SwerveDrive_Calculate(g_swerve_drive, vx, vy, wz, current_angles);
+  // 当 g_idle_spin_orientation=true 时，我们希望仅按小陀螺角速度计算“方向朝向”，而车轮速度保持 0。
+  float wz_for_angle = wz;
+  if (g_idle_spin_orientation) {
+    // 用固定 SPIN_MODE_W_SPEED 来产生朝向，但不用于驱动轮速
+    wz_for_angle = SPIN_MODE_W_SPEED;
+  }
+  SwerveDrive_Calculate(g_swerve_drive, vx, vy, wz_for_angle, current_angles);
 
   for (int i = 0; i < 4; ++i) {
     SwerveModuleState target_state = SwerveDrive_GetModuleState(g_swerve_drive, i);
@@ -435,8 +446,12 @@ static void RunSwerveControl(float vx, float vy, float wz)
     g_m3508_target[i] = 0.0f;
     g_computed_wheel_speed[i] = 0.0f;
   } else {
-    g_m3508_target[i] = target_state.speed_rads; // 保留原先变量名
-    g_computed_wheel_speed[i] = target_state.speed_rads; // 供 main.c 使用
+    // 加入极小速度阈值，避免 PID 因浮点残留一直输出小电流
+    const float SPEED_EPS = 1e-3f;
+    float tgt = target_state.speed_rads;
+    if (fabsf(tgt) < SPEED_EPS) tgt = 0.0f;
+    g_m3508_target[i] = tgt; // 保留原先变量名
+    g_computed_wheel_speed[i] = tgt; // 供 main.c 使用
   }
   }
 }
@@ -453,6 +468,13 @@ static void SetAllMotorsZero(void) {
   // 2. Yaw 电机 (使用 mit_ctrl 模拟速度模式，发送速度0)
   mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
   
+  // 2.5 将导出的解算目标也置为 0，帮助 C 侧尽快收敛为 0 输出
+  for (int i = 0; i < 4; ++i) {
+    g_computed_wheel_speed[i] = 0.0f;
+    g_m3508_target[i] = 0.0f;
+    g_computed_steer_angle[i] = 0.0f;
+  }
+
   // 3. 重置所有 10 个 PID
   for (int i = 0; i < 4; ++i) {
       if(g_steer_pids[i]) Pid_Reset(g_steer_pids[i]);

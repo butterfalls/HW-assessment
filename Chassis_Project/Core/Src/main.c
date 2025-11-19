@@ -354,6 +354,15 @@ void Control_Loop(void)
   Pid_SetParams(g_pid_controller_1, &g_position_pid_params);
   // run_position_control_loop();
 
+  // 急停时：重置四轮 PID 和输出为 0，避免后续产生电流指令
+  if (g_control_mode == MODE_ESTOP) {
+    for (int i = 0; i < 4; ++i) {
+      if (g_wheel_pids_c[i]) Pid_Reset(g_wheel_pids_c[i]);
+      g_wheel_output_c[i] = 0.0f;
+    }
+    return;
+  }
+
   /* 惰性初始化四轮 PID（确保 M3508 句柄已在 MainInit 中创建） */
   if (!g_wheel_pid_inited && g_wheel_motors[0] != NULL) {
     for (int i = 0; i < 4; ++i) {
@@ -368,6 +377,11 @@ void Control_Loop(void)
       float target_speed = g_computed_wheel_speed[i];
       float fdb_speed = g_m3508_feedback[i]; // 或使用 g_m3508_feedback[i]
       Pid_SetParams(g_wheel_pids_c[i], &g_wheel_pid_params);
+      // 对极小目标速度直接归零并重置积分，避免残余转动
+      if (fabsf(target_speed) < 1e-3f) {
+        target_speed = 0.0f;
+        Pid_Reset(g_wheel_pids_c[i]);
+      }
       float output_current = Pid_Calc(g_wheel_pids_c[i], target_speed, fdb_speed);
       /* 限幅并保存 */
       if (output_current > 16384.0f) output_current = 16384.0f;
@@ -395,6 +409,23 @@ void Control_CAN_Tx(void)
   g_tx_header_1fe.RTR = CAN_RTR_DATA;
   g_tx_header_1fe.DLC = 8;
   g_tx_header_1fe.TransmitGlobalTime = DISABLE;
+
+  // 急停：直接发送全 0 到 0x1FE 和 0x200
+  if (g_control_mode == MODE_ESTOP) {
+    for (i = 0; i < 8; ++i) g_can_tx_msg_1ff[i] = 0;
+    HAL_CAN_AddTxMessage(&hcan1, &g_tx_header_1fe, g_can_tx_msg_1ff, &g_tx_mailbox_1fe);
+
+    // 发送 0x200 全 0
+    CAN_TxHeaderTypeDef tx_header_200;
+    tx_header_200.StdId = 0x200;
+    tx_header_200.IDE = CAN_ID_STD;
+    tx_header_200.RTR = CAN_RTR_DATA;
+    tx_header_200.DLC = 8;
+    tx_header_200.TransmitGlobalTime = DISABLE;
+    uint8_t zero_200[8] = {0};
+    HAL_CAN_AddTxMessage(&hcan2, &tx_header_200, zero_200, &g_can2_tx_mailbox_200);
+    return;
+  }
 
   for (i = 0; i < 4; i++) {
     /* 1) 从 C++ 模块读取分解出的目标角度 (rad) */

@@ -39,22 +39,22 @@ extern "C" {
 // **注意**: 必须在机器人上进行实际整定! 新增参数默认值给出合理起点，可按需要微调。
 // 1. 航向电机 (GM6020) - 角度环 (电流模式)
 #define PID_STEER_PARAMS { \
-    250.0f, 0.0f, 50.0f, /* Kp Ki Kd */ \
+    250.0f, 13.0f, 50.0f, /* Kp Ki Kd */ \
     16384.0f, 4000.0f,  /* max_out, max_integral */ \
     0.01f, 0.5f,          /* 死区 0.5度, 积分范围 30度 */ \
     0.15f, 0.001f        /* d_filter_gain, dt(s) */ \
 }
 // 2. 轮速电机 (M3508) - 速度环 (rad/s)
 #define PID_WHEEL_PARAMS { \
-    30.0f, 10.0f, 4.0f,   /* Kp Ki Kd (示例为0，请按实机整定) */ \
-    950.0f, 400.0f,  /* max_out, max_integral */ \
+    65.0f, 700.0f, 4.0f,   /* Kp Ki Kd (示例为0，请按实机整定) */ \
+    2000.0f, 400.0f,  /* max_out, max_integral */ \
     0.1f, 20.0f,           /* 速度死区, 积分范围 */ \
     1.0f, 0.001f       /* d_filter_gain, dt(s) */ \
 }
 // 3. 底盘跟随PID (输出 wz, rad/s)
 #define PID_FOLLOW_PARAMS { \
-    5.0f, 0.0f, 0.1f,   /* Kp Ki Kd */ \
-    (M_PI * 2.0f), 1.0f,/* max_out, max_integral */ \
+    2.0f, 3.0f, 0.001f,   /* Kp Ki Kd */ \
+    (M_PI * 0.9f), 0.5f,/* max_out, max_integral */ \
     0.02f, 0.5f,        /* deadband(rad), integral_range(rad) */ \
     0.2f, 0.001f        /* d_filter_gain, dt(s) */ \
 }
