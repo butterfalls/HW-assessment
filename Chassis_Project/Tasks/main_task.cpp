@@ -472,11 +472,15 @@ static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis
     // 已被正确校准到 0.0 rad (即云台指向底盘正前方)。
     float delta_yaw_rad = g_yaw_motor.para.pos;
     
-    // 2. 旋转矩阵
-    float cos_delta = arm_cos_f32(delta_yaw_rad);
-    float sin_delta = arm_sin_f32(delta_yaw_rad);
-    
-    // 3. (Gimbal Frame -> Chassis Frame)
-    *chassis_vx = gimbal_vx * cos_delta - gimbal_vy * sin_delta;
-    *chassis_vy = gimbal_vx * sin_delta + gimbal_vy * cos_delta;
+  // 修正: 用户反馈摇杆在 Y 方向上回传值与期望相反，
+  // 在解算阶段将云台系的 vy 取反，以使前后方向与摇杆一致。
+  float adj_gimbal_vy = -gimbal_vy;
+
+  // 2. 旋转矩阵
+  float cos_delta = arm_cos_f32(delta_yaw_rad);
+  float sin_delta = arm_sin_f32(delta_yaw_rad);
+
+  // 3. (Gimbal Frame -> Chassis Frame)
+  *chassis_vx = gimbal_vx * cos_delta - adj_gimbal_vy * sin_delta;
+  *chassis_vy = gimbal_vx * sin_delta + adj_gimbal_vy * cos_delta;
 }
