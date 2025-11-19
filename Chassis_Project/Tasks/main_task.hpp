@@ -25,6 +25,9 @@ extern volatile float g_gimbal_target_yaw_rad; // 云台目标绝对角度
 extern volatile float g_gimbal_current_yaw_rad; // 云台当前绝对角度
 extern volatile float g_chassis_imu_yaw_rad; // 底盘IMU绝对角度
 extern volatile float g_rc_cmd_vx; // 无人机遥控器X轴命令
+extern volatile float g_m3508_feedback[4];
+extern volatile float g_m3508_target[4];
+extern volatile float g_computed_wheel_speed[4]; // 新增：仅解算出的四轮目标速度 (rad/s)，供 main.c 做 PID
 
 void MainInit(void);
 void MainTask_Loop(void);

@@ -79,6 +79,13 @@ volatile float g_debug_steer_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 volatile float g_computed_steer_angle[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 // -----------------------------
 
+/* Yaw sign and bias: 用于修正云台与底盘角度方向与偏差
+ * g_yaw_sign = -1 表示取反（若云台方向和轮子方向相反时使用）
+ * g_yaw_bias 以弧度为单位，便于微调整体偏差
+ */
+volatile float g_yaw_sign = -1.0f;
+volatile float g_yaw_bias = 0.0f;
+
 /* 每个舵轮的角度偏移修正 (rad)，用于将检测零点对齐到机械零点 */
 static const float g_steer_angle_offsets_cpp[4] = {
   0.52f,  /* motor 0 +0.52 */
@@ -97,6 +104,16 @@ PidParams wheel_pid_params = PID_WHEEL_PARAMS;
 PidParams follow_pid_params = PID_FOLLOW_PARAMS;
 PidParams yaw_pid_params = PID_CHASSIS_YAW_PARAMS;
 
+/* M3508 调试变量：反馈值、目标值和每轮 PID 参数数组（便于在调试时查看/修改） */
+volatile float g_m3508_feedback[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+volatile float g_m3508_target[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+/* 新增：仅用于导出计算出的目标速度 (rad/s)，不在本文件进行 PID */
+volatile float g_computed_wheel_speed[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+/* M3508 发送调试: 保存即将下发的电流值与原始 CAN 数据包，方便在调试器中观察 */
+volatile int16_t g_m3508_tx_currents[4] = {0,0,0,0};
+volatile uint8_t g_m3508_tx_packet[8] = {0};
+volatile uint32_t g_last_m3508_tx_id = 0;
+volatile uint8_t g_last_m3508_tx_len = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 static void RobotInit(void);
@@ -245,20 +262,23 @@ static void RunControlMode(void) {
     //    g_control_mode 是由 CAN 中断写入的 volatile 变量
     switch(g_control_mode) {
         
-        case MODE_SEPARATE:
-            // 分离模式: "底盘不参与旋转"
-            wz_cmd = 0.0f;
-            break;
+      case MODE_SEPARATE:
+          // 分离模式: "底盘不参与旋转"
+          wz_cmd = 0.0f;
+          break;
             
-        case MODE_FOLLOW:
-            // 跟随模式: "底盘是跟着云台一同旋转的"
-            // 底盘旋转 (wz_cmd) 的目标是让底盘的绝对角度 (g_current_chassis_yaw_cumulative)
-            // 去追随云台的 *目标* 绝对角度 (g_target_gimbal_yaw_rad)
-            Pid_SetParams(g_follow_pid,&follow_pid_params);
-            wz_cmd = Pid_CalcAngle(g_follow_pid,
-                                   0.0f,                   // 目标角度 (0.0 rad)
-                                   g_yaw_motor.para.pos);  // 反馈角度 (来自Yaw电机)
-            break;
+      case MODE_FOLLOW: {
+        // 跟随模式: "底盘是跟着云台一同旋转的"
+        // 底盘旋转 (wz_cmd) 的目标是让底盘的绝对角度 (g_current_chassis_yaw_cumulative)
+        // 去追随云台的 *目标* 绝对角度 (g_target_gimbal_yaw_rad)
+        Pid_SetParams(g_follow_pid,&follow_pid_params);
+        // 使用可调的 yaw 符号与偏差（便于修正云台方向与轮子方向相反的问题）
+        float adjusted_yaw = g_yaw_sign * g_yaw_motor.para.pos + g_yaw_bias;
+        wz_cmd = Pid_CalcAngle(g_follow_pid,
+        0.0f,                   // 目标角度 (0.0 rad)
+        adjusted_yaw);         // 反馈角度 (来自Yaw电机，已调整)
+        break;
+      }
             
         case MODE_SPIN:
             // 小陀螺模式: "要求底盘...自行旋转"
@@ -377,10 +397,11 @@ static void RunSwerveControl(float vx, float vy, float wz)
     // [警告] M3508 用于驱动车轮，必须是速度闭环！
     // 不能使用 GetMotorAngleRad (位置)，否则车轮会锁死无法连续滚动。
     // 这里保持 GetOutputVelRadS (速度反馈)。速度值不会无限累积，不会溢出。
-    float wheel_fdb = M3508_GetOutputVelRadS(g_wheel_motors[i]);
-    Pid_SetParams(g_wheel_pids[i], &wheel_pid_params);
-    float wheel_output = Pid_Calc(g_wheel_pids[i], target_state.speed_rads, wheel_fdb);
-    M3508_SetInputCurrent(g_wheel_motors[i], (int16_t)wheel_output);
+  float wheel_fdb = M3508_GetOutputVelRadS(g_wheel_motors[i]);
+  /* 保存反馈值与解算出的目标速度；不在此处做 PID 与电流下发 */
+  g_m3508_feedback[i] = wheel_fdb;
+  g_m3508_target[i] = target_state.speed_rads; // 保留原先变量名
+  g_computed_wheel_speed[i] = target_state.speed_rads; // 供 main.c 使用
   }
 }
 
@@ -410,15 +431,32 @@ static void SetAllMotorsZero(void) {
  */
 static void SendChassisCanCommands(void) {
   // 1. M3508 (CAN2)
-  int16_t c1 = M3508_GetInputCurrent(g_wheel_motors[M3508_WHEEL_FR_ID - 1]);
-  int16_t c2 = M3508_GetInputCurrent(g_wheel_motors[M3508_WHEEL_FL_ID - 1]);
-  int16_t c3 = M3508_GetInputCurrent(g_wheel_motors[M3508_WHEEL_BL_ID - 1]);
-  int16_t c4 = M3508_GetInputCurrent(g_wheel_motors[M3508_WHEEL_BR_ID - 1]);
+  // The CAN frame 0x200 expects currents for motor IDs 1..4 in order.
+  // Map motor IDs to module indices:
+  // ID 1 -> SWERVE_FL_MODULE
+  // ID 2 -> SWERVE_BL_MODULE
+  // ID 3 -> SWERVE_BR_MODULE
+  // ID 4 -> SWERVE_FR_MODULE
+  int16_t c1 = M3508_GetInputCurrent(g_wheel_motors[SWERVE_FL_MODULE]); // ID 1
+  int16_t c2 = M3508_GetInputCurrent(g_wheel_motors[SWERVE_BL_MODULE]); // ID 2
+  int16_t c3 = M3508_GetInputCurrent(g_wheel_motors[SWERVE_BR_MODULE]); // ID 3
+  int16_t c4 = M3508_GetInputCurrent(g_wheel_motors[SWERVE_FR_MODULE]); // ID 4
   g_m3508_tx_buf[0] = (c1 >> 8); g_m3508_tx_buf[1] = (c1);
   g_m3508_tx_buf[2] = (c2 >> 8); g_m3508_tx_buf[3] = (c2);
   g_m3508_tx_buf[4] = (c3 >> 8); g_m3508_tx_buf[5] = (c3);
   g_m3508_tx_buf[6] = (c4 >> 8); g_m3508_tx_buf[7] = (c4);
-  CAN_Send_Msg(&hcan2, g_m3508_tx_buf, 0x200, 8);
+
+  /* Publish for debugging/inspection */
+  g_m3508_tx_currents[0] = c1;
+  g_m3508_tx_currents[1] = c2;
+  g_m3508_tx_currents[2] = c3;
+  g_m3508_tx_currents[3] = c4;
+  for (int i = 0; i < 8; ++i) g_m3508_tx_packet[i] = g_m3508_tx_buf[i];
+  g_last_m3508_tx_id = 0x200;
+  g_last_m3508_tx_len = 8;
+
+  /* 分离模式：不在 C++ 侧发送 0x200；由 main.c 的 Wheel_CAN_Tx() 统一下发 */
+  // CAN_Send_Msg(&hcan2, g_m3508_tx_buf, 0x200, 8);
 
   // // 2. GM6020 (CAN1)
   // // GM6020 steering outputs are disabled for now (observation-only mode)
@@ -470,7 +508,9 @@ static void CoordinateTransform(float gimbal_vx, float gimbal_vy, float* chassis
     
     // [!!] 警告: 此方法要求 Yaw 电机在 RobotInit() 时
     // 已被正确校准到 0.0 rad (即云台指向底盘正前方)。
-    float delta_yaw_rad = g_yaw_motor.para.pos;
+  // Apply user-configurable sign and bias so we can invert the yaw
+  // direction and add a constant offset for tuning.
+  float delta_yaw_rad = g_yaw_sign * g_yaw_motor.para.pos + g_yaw_bias;
     
   // 修正: 用户反馈摇杆在 Y 方向上回传值与期望相反，
   // 在解算阶段将云台系的 vy 取反，以使前后方向与摇杆一致。

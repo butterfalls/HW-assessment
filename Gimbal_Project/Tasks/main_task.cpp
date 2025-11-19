@@ -120,9 +120,10 @@ void MainTask_Loop(void) {
       // UpdateCumulativeYaw(); // 计算连续的累积角度
       g_current_gimbal_yaw_cumulative = imu_datas.euler_vals[YAW];
       RobotTask();
+      SendGimbalCanCommands();
   }
 
-  SendGimbalCanCommands();
+  
 }
 
 /**

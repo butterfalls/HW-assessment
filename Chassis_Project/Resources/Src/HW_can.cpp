@@ -178,6 +178,7 @@ static void CAN_Rx_Decode_Chassis(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx_da
       
     // 3. DM4310 Yaw 电机反馈 (CAN2: ID 0x01)
     case CHASSIS_YAW_MOTOR_ID:
+    case CHASSIS_YAW_MOTOR_ID + 0x10:
       dm4310_fbdata(&g_yaw_motor, rx_data, rx_header->DLC);
       break;
       

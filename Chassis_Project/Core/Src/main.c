@@ -30,6 +30,7 @@
 #include "iwdg.h"
 #include "pid.hpp"       // 包含 C 兼容头文件
 #include "gm6020.hpp"    // 包含 C 兼容头文件
+#include "m3508.hpp"     // M3508 车轮电机句柄类型
 #include "main_task.hpp" // declare MainTask_Loop()
 #include "system_user.hpp" // PID macros, vehicle geometry
 #include <math.h>
@@ -64,8 +65,11 @@ void Control_CAN_Tx(void);
 void Control_Loop(void);
 void run_position_control_loop(void);
 float clamp_current(float current);
-// 从 C++ 模块读取计算出的目标角度 (rad)
+// 从 C++ 模块读取计算出的舵向角度 (rad) 与四轮目标速度/反馈
 extern volatile float g_computed_steer_angle[4];
+extern volatile float g_computed_wheel_speed[4];
+extern volatile float g_m3508_feedback[4];
+extern M3508Handle g_wheel_motors[4];
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -178,10 +182,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM6) {
     // 1. 运行控制任务 (PID计算)
     MainTask_Loop();
-    Control_Loop();
-
-    // 2. 发送CAN控制报文
-    Control_CAN_Tx();
+    if(tick>=1000){
+      Control_Loop();
+      Control_CAN_Tx();
+    }
   }
 }
 
@@ -196,9 +200,9 @@ GM6020Handle g_motors[4]; // 4个电机
 
 /* 每个舵轮的角度偏移修正 (rad)，用于将检测零点对齐到机械零点 */
 static const float g_motor_angle_offsets[4] = {
-  -0.52f,  /* g_motors[0] 加 0.52 */
-  +1.08f, /* g_motors[1] 减 1.08 */
-  -0.08f,  /* g_motors[2] 加 0.08 */
+  -0.52f ,  /* g_motors[0] 加 0.52 */
+  +1.08f , /* g_motors[1] 减 1.08 */
+  -0.08f + 3.1415926f,  /* g_motors[2] 加 0.08 */
   -1.74f   /* g_motors[3] 加 1.74 */
 };
 
@@ -227,6 +231,16 @@ static PidHandle g_steer_pids_c[4] = {0, 0, 0, 0};
 
 /* 暴露给调试器的舵向 PID 输出 (控制电流)，每个轮一个值 (rad->current) */
 volatile float g_steer_output_c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+/* 四轮速度闭环 PID 句柄与输出（分离模式：在 main.c 做 PID + 发送） */
+static PidHandle g_wheel_pids_c[4] = {0,0,0,0};
+static PidParams g_wheel_pid_params = PID_WHEEL_PARAMS; // 使用宏定义参数
+volatile float g_wheel_output_c[4] = {0.0f,0.0f,0.0f,0.0f}; // PID 计算出的电流（未裁剪前的浮点）
+static uint8_t g_can2_tx_200_buf[8] = {0};
+static uint32_t g_can2_tx_mailbox_200;
+static int g_wheel_pid_inited = 0; // 惰性初始化标记
+
+static void Wheel_CAN_Tx(void); // 前置声明
 
 /* Control functions (copied/adapted) */
 void Control_Init(void)
@@ -319,6 +333,28 @@ void Control_Loop(void)
   // 默认运行位置控制任务
   Pid_SetParams(g_pid_controller_1, &g_position_pid_params);
   // run_position_control_loop();
+
+  /* 惰性初始化四轮 PID（确保 M3508 句柄已在 MainInit 中创建） */
+  if (!g_wheel_pid_inited && g_wheel_motors[0] != NULL) {
+    for (int i = 0; i < 4; ++i) {
+      g_wheel_pids_c[i] = Pid_Create(&g_wheel_pid_params);
+    }
+    g_wheel_pid_inited = 1;
+  }
+
+  /* 四轮速度闭环 PID：使用从 C++ 导出的目标速度与反馈速度 */
+  if (g_wheel_pid_inited) {
+    for (int i = 0; i < 4; ++i) {
+      float target_speed = g_computed_wheel_speed[i];
+      float fdb_speed = M3508_GetOutputVelRadS(g_wheel_motors[i]); // 或使用 g_m3508_feedback[i]
+      Pid_SetParams(g_wheel_pids_c[i], &g_wheel_pid_params);
+      float output_current = Pid_Calc(g_wheel_pids_c[i], target_speed, -fdb_speed);
+      /* 限幅并保存 */
+      if (output_current > 16384.0f) output_current = 16384.0f;
+      if (output_current < -16384.0f) output_current = -16384.0f;
+      g_wheel_output_c[i] = output_current;
+    }
+  }
 }
 
 float clamp_current(float current) {
@@ -366,6 +402,37 @@ void Control_CAN_Tx(void)
   }
 
   HAL_CAN_AddTxMessage(&hcan1, &g_tx_header_1fe, g_can_tx_msg_1ff, &g_tx_mailbox_1fe);
+
+  /* 分离发送：调用单独的四轮 CAN2 发送函数 */
+  Wheel_CAN_Tx();
+}
+
+/* 发送 M3508 四轮电流到 0x200 (CAN2) */
+static void Wheel_CAN_Tx(void)
+{
+  CAN_TxHeaderTypeDef tx_header_200;
+  tx_header_200.StdId = 0x200;
+  tx_header_200.IDE = CAN_ID_STD;
+  tx_header_200.RTR = CAN_RTR_DATA;
+  tx_header_200.DLC = 8;
+  tx_header_200.TransmitGlobalTime = DISABLE;
+
+  /* ID 顺序: 1(F L) 2(B L) 3(B R) 4(F R) */
+  int16_t c1 = (int16_t)g_wheel_output_c[SWERVE_FL_MODULE];
+  int16_t c2 = (int16_t)g_wheel_output_c[SWERVE_BL_MODULE];
+  int16_t c3 = (int16_t)g_wheel_output_c[SWERVE_BR_MODULE];
+  int16_t c4 = (int16_t)g_wheel_output_c[SWERVE_FR_MODULE];
+  // int16_t c1 = 600;
+  // int16_t c2 = 300;
+  // int16_t c3 = 600;
+  // int16_t c4 = 600;
+
+  g_can2_tx_200_buf[0] = (c1 >> 8) & 0xFF; g_can2_tx_200_buf[1] = c1 & 0xFF;
+  g_can2_tx_200_buf[2] = (c2 >> 8) & 0xFF; g_can2_tx_200_buf[3] = c2 & 0xFF;
+  g_can2_tx_200_buf[4] = (c3 >> 8) & 0xFF; g_can2_tx_200_buf[5] = c3 & 0xFF;
+  g_can2_tx_200_buf[6] = (c4 >> 8) & 0xFF; g_can2_tx_200_buf[7] = c4 & 0xFF;
+
+  HAL_CAN_AddTxMessage(&hcan2, &tx_header_200, g_can2_tx_200_buf, &g_can2_tx_mailbox_200);
 }
 
 /* USER CODE END 4 */
