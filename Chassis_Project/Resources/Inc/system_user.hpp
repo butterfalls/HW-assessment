@@ -39,23 +39,39 @@ extern "C" {
 // **注意**: 必须在机器人上进行实际整定! 新增参数默认值给出合理起点，可按需要微调。
 // 1. 航向电机 (GM6020) - 角度环 (电流模式)
 #define PID_STEER_PARAMS { \
-    250.0f, 13.0f, 50.0f, /* Kp Ki Kd */ \
+    350.0f, 2400.0f, 1.0f, /* Kp Ki Kd */ \
     16384.0f, 4000.0f,  /* max_out, max_integral */ \
     0.01f, 0.5f,          /* 死区 0.5度, 积分范围 30度 */ \
     0.15f, 0.001f        /* d_filter_gain, dt(s) */ \
 }
+// 1.1 航向电机 (GM6020) - 速度环 (级联内环, 输出电流)
+// 输出: 电流指令; 反馈: vel_rpm -> rad/s
+#define PID_STEER_SPEED_PARAMS { \
+    300.0f, 2400.0f, 1.5f,   /* Kp Ki Kd (初始参考) */ \
+    16384.0f, 5000.0f,     /* max_out, max_integral */ \
+    0.05f, 40.0f,          /* 死区(rad/s), 积分范围 */ \
+    0.2f, 0.001f          /* d_filter_gain, dt(s) */ \
+}
+// 1.2 航向电机 (GM6020) - 角度外环 (输出目标角速度 rad/s)
+// 将角度误差转换为期望角速度, 避免电机在大角度跳变下直接给大电流
+#define PID_STEER_ANGLE_TO_SPEED_PARAMS { \
+    200.0f, 2000.0f, 0.8f,      /* Kp Ki Kd */ \
+    55.0f, 250.0f,         /* max_out(角速度上限 rad/s), max_integral */ \
+    0.002f, 2.7f,          /* deadband(rad), integral_range(rad) */ \
+    0.25f, 0.001f         /* d_filter_gain, dt(s) */ \
+}
 // 2. 轮速电机 (M3508) - 速度环 (rad/s)
 #define PID_WHEEL_PARAMS { \
-    65.0f, 700.0f, 4.0f,   /* Kp Ki Kd (示例为0，请按实机整定) */ \
-    2000.0f, 400.0f,  /* max_out, max_integral */ \
+    65.0f, 1000.0f, 1.0f,   /* Kp Ki Kd (示例为0，请按实机整定) */ \
+    10000.0f, 4000.0f,  /* max_out, max_integral */ \
     0.1f, 20.0f,           /* 速度死区, 积分范围 */ \
     1.0f, 0.001f       /* d_filter_gain, dt(s) */ \
 }
 // 3. 底盘跟随PID (输出 wz, rad/s)
 #define PID_FOLLOW_PARAMS { \
-    2.0f, 3.0f, 0.001f,   /* Kp Ki Kd */ \
-    (M_PI * 0.9f), 0.5f,/* max_out, max_integral */ \
-    0.02f, 0.5f,        /* deadband(rad), integral_range(rad) */ \
+    0.13f, 0.1f, 0.001f,   /* Kp Ki Kd */ \
+    (M_PI * 0.8f), 1.8f,/* max_out, max_integral */ \
+    0.02f, 1.0f,        /* deadband(rad), integral_range(rad) */ \
     0.2f, 0.001f        /* d_filter_gain, dt(s) */ \
 }
 // 4. 云台Yaw电机PID (输出 rad/s)
@@ -67,8 +83,8 @@ extern "C" {
 } // MaxOut (约 18 rad/s)
 
 // ------------------- 考核说明中的机器人几何参数 (舵轮组) --------------------
-#define SWERVE_WHEELBASE_X (0.384f)
-#define SWERVE_WHEELBASE_Y (0.310f)
+#define SWERVE_WHEELBASE_X (0.310f)
+#define SWERVE_WHEELBASE_Y (0.384f)
 #define SWERVE_WHEEL_RADIUS (0.104f / 2.0f)
 #define SWERVE_WHEEL_GEAR_RATIO (14.0f)
 

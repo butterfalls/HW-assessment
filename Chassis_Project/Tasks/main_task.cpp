@@ -44,6 +44,10 @@ volatile float g_rc_cmd_vx = 0.0f;
 volatile float g_rc_cmd_vy = 0.0f;
 volatile float g_target_gimbal_yaw_rad = 0.0f; 
 volatile float g_current_gimbal_yaw_rad = 0.0f; 
+// Yaw 目标/反馈就绪门限：复位后等 0x151 到达一定帧数再放开控制，避免首拍乱冲
+volatile uint32_t g_yaw_can_frame_count = 0;
+volatile int g_yaw_can_ready = 0; // 0:未就绪 1:已就绪
+volatile uint32_t g_yaw_ready_tick = 0; // 记录就绪的时间戳（ms）
 
 // -- [V1.6.1] 底盘 IMU 累积角度 --
 float g_current_chassis_yaw_cumulative = 0.0f; // 底盘当前绝对 Yaw (连续值)
@@ -348,15 +352,55 @@ static void ControlChassisYaw(void)
     mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
     return;
   }
+  // 复位后冷启动：等待 0x151 到达若干帧后再开始控制，避免未就绪数据导致首拍大误差
+  static int s_prev_ready = 0;
+  if (!g_yaw_can_ready) {
+    // 未就绪，持续保持 0 输出并重置 PID
+    if (g_chassis_yaw_pid) Pid_Reset(g_chassis_yaw_pid);
+    mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    s_prev_ready = 0;
+    return;
+  } else if (!s_prev_ready && g_yaw_can_ready) {
+    // 就绪上升沿：对零一次，避免首拍大误差
+    if (g_chassis_yaw_pid) Pid_Reset(g_chassis_yaw_pid);
+    g_target_gimbal_yaw_rad = g_current_gimbal_yaw_rad;
+    g_yaw_ready_tick = tick; // 记录就绪时刻
+    s_prev_ready = 1;
+  }
   float target_yaw = g_target_gimbal_yaw_rad;
   float current_yaw = g_current_gimbal_yaw_rad;
   // 使用角度 PID：自动处理环绕、微分先行与滤波
   Pid_SetParams(g_chassis_yaw_pid, &yaw_pid_params);
+  // 启动期使用较温和的 PID 参数与限幅
+  PidParams warm_params = yaw_pid_params;
+  uint32_t since_ready = (tick >= g_yaw_ready_tick) ? (tick - g_yaw_ready_tick) : 0;
+  const uint32_t WARMUP_MS = 300; // 启动 300ms 温和期
+  if (since_ready < WARMUP_MS) {
+    warm_params.Kp *= 0.4f; // 降低比例增益
+    warm_params.Ki = 0.0f;  // 关闭积分
+    Pid_SetParams(g_chassis_yaw_pid, &warm_params);
+  } else {
+    Pid_SetParams(g_chassis_yaw_pid, &yaw_pid_params);
+  }
+
   target_speed_ref = Pid_CalcAngle(g_chassis_yaw_pid, target_yaw, current_yaw);
-    const float MAX_YAW_SPEED = 20.0f;
-    if (target_speed_ref > MAX_YAW_SPEED) target_speed_ref = MAX_YAW_SPEED;
-    if (target_speed_ref < -MAX_YAW_SPEED) target_speed_ref = -MAX_YAW_SPEED;
-    mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, target_speed_ref, 0.0f, 2.0f, 0.0f);
+
+  // 速度限幅 + 斜坡，启动期更温和
+  float MAX_YAW_SPEED = 20.0f;
+  float YAW_ACCEL_LIMIT = 50.0f; // 正常加速度限幅
+  if (since_ready < WARMUP_MS) {
+    MAX_YAW_SPEED = 2.0f;   // 启动期最大 2 rad/s
+    YAW_ACCEL_LIMIT = 30.0f; // 启动期更小加速度
+  }
+  if (target_speed_ref > MAX_YAW_SPEED) target_speed_ref = MAX_YAW_SPEED;
+  if (target_speed_ref < -MAX_YAW_SPEED) target_speed_ref = -MAX_YAW_SPEED;
+  static float last_speed_ref = 0.0f;
+  float max_step = YAW_ACCEL_LIMIT * kCtrlPeriod;
+  float delta = target_speed_ref - last_speed_ref;
+  if (delta > max_step) delta = max_step;
+  if (delta < -max_step) delta = -max_step;
+  last_speed_ref += delta;
+  mit_ctrl(&hcan2, g_yaw_motor.para.id, 0.0f, last_speed_ref, 0.0f, 2.0f, 0.0f);
 }
 
 

@@ -60,6 +60,24 @@ volatile float g_wheel_output_c[4] = {0.0f,0.0f,0.0f,0.0f}; // PID 计算出的�
 static uint8_t g_can2_tx_200_buf[8] = {0};
 static uint32_t g_can2_tx_mailbox_200;
 static int g_wheel_pid_inited = 0; // 惰性初始化标记
+// --- 舵向级联调试变量新增 ---
+// 外环角度误差 (rad, wrap 后)
+volatile float g_steer_angle_err[4] = {0.0f,0.0f,0.0f,0.0f};
+// 外环输出的期望角速度 (rad/s, 限幅后)
+volatile float g_steer_desired_speed[4] = {0.0f,0.0f,0.0f,0.0f};
+// 内环角速度误差 (rad/s)
+volatile float g_steer_speed_err[4] = {0.0f,0.0f,0.0f,0.0f};
+// 内环未限幅电流输出 (raw before clamp)
+volatile float g_steer_current_raw[4] = {0.0f,0.0f,0.0f,0.0f};
+// 电流是否饱和标记 (0/1)
+volatile uint8_t g_steer_current_sat[4] = {0,0,0,0};
+// --- 新增：六个核心调试量（位置/速度目标与反馈） ---
+// 位置目标 (rad) 与位置反馈 (rad)
+volatile float g_steer_angle_target[4] = {0.0f,0.0f,0.0f,0.0f};
+volatile float g_steer_angle_feedback[4] = {0.0f,0.0f,0.0f,0.0f};
+// 速度目标 (rad/s) 与速度反馈 (rad/s)
+volatile float g_steer_speed_target[4] = {0.0f,0.0f,0.0f,0.0f};
+volatile float g_steer_speed_feedback[4] = {0.0f,0.0f,0.0f,0.0f};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -75,6 +93,7 @@ extern volatile float g_computed_steer_angle[4];
 extern volatile float g_computed_wheel_speed[4];
 extern volatile float g_m3508_feedback[4];
 extern M3508Handle g_wheel_motors[4];
+extern GM6020Handle g_steer_motors[4];
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -240,11 +259,11 @@ static uint32_t g_tx_mailbox_1fe;
 
 // --- PID 参数 (C 结构体) ---
 static PidParams g_position_pid_params = {
-  .Kp = 2200.0f,
-  .Ki = 200.0f,
-  .Kd = 200.0f,
+  .Kp = 4200.0f,
+  .Ki = 3300.0f,
+  .Kd = 100.0f,
   .max_out = 16384.0f,
-  .max_integral = 5000.0f,
+  .max_integral = 6000.0f,
   .deadband = 0.002f,
   .integral_range = 0.5f,
   .d_filter_gain = 0.8f,
@@ -258,6 +277,13 @@ static PidHandle g_steer_pids_c[4] = {0, 0, 0, 0};
 volatile float g_steer_output_c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 /* 四轮速度闭环 PID 句柄与输出（分离模式：在 main.c 做 PID + 发送） */
+
+/* 航向电机级联 PID 句柄：角度->角速度, 角速度->电流 */
+static PidHandle g_steer_angle_speed_pid[4] = {0,0,0,0};
+static PidHandle g_steer_speed_current_pid[4] = {0,0,0,0};
+static uint8_t g_steer_cascade_inited = 0;
+static PidParams g_steer_angle_speed_params = PID_STEER_ANGLE_TO_SPEED_PARAMS;
+static PidParams g_steer_speed_current_params = PID_STEER_SPEED_PARAMS;
 
 
 static void Wheel_CAN_Tx(void); // 前置声明
@@ -278,6 +304,13 @@ void Control_Init(void)
   for (i = 0; i < 4; i++) {
     g_steer_pids_c[i] = Pid_Create(&g_position_pid_params);
   }
+
+  // 级联舵向 PID 惰性初始化（角度->速度, 速度->电流）
+  for (i = 0; i < 4; i++) {
+    g_steer_angle_speed_pid[i] = Pid_Create(&g_steer_angle_speed_params);
+    g_steer_speed_current_pid[i] = Pid_Create(&g_steer_speed_current_params);
+  }
+  g_steer_cascade_inited = 1;
 
   // 3. 配置CAN过滤器
   CAN_FilterTypeDef filter_config;
@@ -350,6 +383,55 @@ void run_position_control_loop(void)
 /* Control loop called from TIM6 */
 void Control_Loop(void)
 {
+  // ---------------- 舵向级联控制 (角度环 -> 速度环 -> 电流) ----------------
+  if (g_steer_cascade_inited) {
+    extern volatile float g_computed_steer_angle[4]; // 目标角度 (rad) 来自 C++ 解算
+    for (int i = 0; i < 4; ++i) {
+      if (g_steer_motors[i] == NULL) continue;
+  float target_angle = g_computed_steer_angle[i];
+  float fdb_angle = GM6020_GetAngleRad(g_steer_motors[i]);
+  /* 与 C++ 侧保持一致：加机械零点偏移并归一到 [0, 2PI) */
+  fdb_angle += g_motor_angle_offsets[i];
+  while (fdb_angle < 0.0f) fdb_angle += 2.0f * M_PI;
+  while (fdb_angle >= 2.0f * M_PI) fdb_angle -= 2.0f * M_PI;
+  // 保存位置目标与反馈
+  g_steer_angle_target[i] = target_angle;
+  g_steer_angle_feedback[i] = fdb_angle;
+      // 外环: 使用角度 PID 直接获得期望角速度 (rad/s)，内部已处理角度环绕
+      Pid_SetParams(g_steer_angle_speed_pid[i], &g_steer_angle_speed_params);
+      float desired_speed = Pid_CalcAngle(g_steer_angle_speed_pid[i], target_angle, fdb_angle);
+      // 可选限幅确保不会超过配置上限 (基于参数 max_out 或额外安全值)
+      const float STEER_SPEED_LIMIT = g_steer_angle_speed_params.max_out; // 由宏 PID_STEER_ANGLE_TO_SPEED_PARAMS 定义
+      if (desired_speed > STEER_SPEED_LIMIT) desired_speed = STEER_SPEED_LIMIT;
+      if (desired_speed < -STEER_SPEED_LIMIT) desired_speed = -STEER_SPEED_LIMIT;
+      // 调试: 记录角度误差 (重新计算一次 wrap 后的差值)
+      float angle_err = target_angle - fdb_angle;
+      while (angle_err > M_PI) angle_err -= 2.0f * M_PI;
+      while (angle_err < -M_PI) angle_err += 2.0f * M_PI;
+      g_steer_angle_err[i] = angle_err;
+      g_steer_desired_speed[i] = desired_speed;
+  // 保存速度目标
+  g_steer_speed_target[i] = desired_speed;
+
+      // 内环反馈角速度 (RPM -> rad/s)
+      int16_t vel_rpm = GM6020_GetVelRPM(g_steer_motors[i]);
+      float fdb_speed = (float)vel_rpm * (2.0f * M_PI / 60.0f);
+  // 保存速度反馈
+  g_steer_speed_feedback[i] = fdb_speed;
+      Pid_SetParams(g_steer_speed_current_pid[i], &g_steer_speed_current_params);
+      float output_current_raw = Pid_Calc(g_steer_speed_current_pid[i], desired_speed, fdb_speed);
+      g_steer_speed_err[i] = desired_speed - fdb_speed;
+      g_steer_current_raw[i] = output_current_raw;
+      // 限幅与饱和标记
+      float output_current = output_current_raw;
+      if (output_current > 16384.0f) { output_current = 16384.0f; g_steer_current_sat[i] = 1; }
+      else if (output_current < -16384.0f) { output_current = -16384.0f; g_steer_current_sat[i] = 1; }
+      else { g_steer_current_sat[i] = 0; }
+
+      GM6020_SetInput(g_steer_motors[i], output_current);
+      g_steer_output_c[i] = output_current; // 暴露调试
+    }
+  }
   // 默认运行位置控制任务
   Pid_SetParams(g_pid_controller_1, &g_position_pid_params);
   // run_position_control_loop();

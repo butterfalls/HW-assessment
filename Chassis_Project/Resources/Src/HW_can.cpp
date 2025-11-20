@@ -69,6 +69,11 @@ void CanFilter_Init(CAN_HandleTypeDef *hcan) {
  * @note    [V1.5.0] 拓扑图: CAN1 = (上下通信) + (GM6020)
  */
 extern GM6020Handle g_motors[];
+/* Yaw 目标/当前角来自 0x151，增加就绪计数用于冷启动门限 */
+extern volatile float g_target_gimbal_yaw_rad;
+extern volatile float g_current_gimbal_yaw_rad;
+extern volatile uint32_t g_yaw_can_frame_count;
+extern volatile int g_yaw_can_ready;
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
   if (hcan == &hcan1) {
       CAN_RxHeaderTypeDef rx_header;
@@ -133,10 +138,19 @@ static void CAN_Rx_Decode_Interboard(CAN_RxHeaderTypeDef *rx_header, uint8_t *rx
       break;
     }
       
-    case CAN_ID_RX_YAW_TARGET: // 0x151 (8字节数据)
+    case CAN_ID_RX_YAW_TARGET: { // 0x151 (8字节数据)
       memcpy((void*)&g_target_gimbal_yaw_rad, rx_data, sizeof(float));
       memcpy((void*)&g_current_gimbal_yaw_rad, rx_data + 4, sizeof(float));
+      // 归一化到 [-PI, PI]
+      while (g_target_gimbal_yaw_rad > M_PI)  g_target_gimbal_yaw_rad -= 2.0f * M_PI;
+      while (g_target_gimbal_yaw_rad < -M_PI) g_target_gimbal_yaw_rad += 2.0f * M_PI;
+      while (g_current_gimbal_yaw_rad > M_PI)  g_current_gimbal_yaw_rad -= 2.0f * M_PI;
+      while (g_current_gimbal_yaw_rad < -M_PI) g_current_gimbal_yaw_rad += 2.0f * M_PI;
+      // 冷启动就绪计数（收到至少5帧后认为就绪，约数毫秒）
+      g_yaw_can_frame_count++;
+      if (tick>=2000) g_yaw_can_ready = 1;
       break;
+    }
   }
 }
 
